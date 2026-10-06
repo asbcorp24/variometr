@@ -8,6 +8,7 @@
 #include <cstdlib>
 
 constexpr uint8_t SDA_PIN = 21, SCL_PIN = 22, BUZZER_PIN = 14;
+constexpr bool SOUND_ENABLED_ON_BOOT = true;
 constexpr uint8_t HMC_SDA_PIN = 16, HMC_SCL_PIN = 17;
 TwoWire magnetWire(1);
 bool magnetBusReady = false;
@@ -26,7 +27,8 @@ int soundStep = -1;
 uint32_t soundTime = 0, sampleTime = 0;
 vario::Filter flight;
 Preferences settings;
-bool settingsReady = false, audioEnabled = false;
+bool settingsReady = false;
+bool audioEnabled = SOUND_ENABLED_ON_BOOT;
 uint8_t currentPage = 0; // 0 variometer, 1 compass, 2 diagnostics.
 compass::Heading magneticHeading;
 uint32_t compassTime = 0;
@@ -469,7 +471,8 @@ void help() {
   Serial.println("Buttons: BACK=32 UP=33 DOWN=34 OK=35, active LOW; 34/35 need 10k to 3V3.");
   Serial.println("BACK: page/cancel, hold BACK: sound; OK: select/settings, hold OK: settings.");
   Serial.println("UP/DOWN: select/change, hold repeats. Menu zero requires YES + OK.");
-  Serial.println("\nVARIOMETER: barometer 10 Hz, display 5 Hz, sound initially muted.");
+  Serial.printf("\nVARIOMETER: barometer 10 Hz, display 5 Hz, sound %s.\n",
+                audioEnabled ? "ON" : "MUTED");
   Serial.println("m=toggle vario sound, x=mute, z=zero relative altitude, v=vario/compass/diagnostics");
   Serial.println("q1013.25 + Enter = QNH hPa (800..1100); a10 + Enter = averaging seconds (1..30)");
   Serial.println("s=scan, d=detect sensors, r=RTC, p=toggle Serial telemetry, t=redraw, h=help");
@@ -650,6 +653,8 @@ void setup() {
     flight.setAverage(settings.getFloat("avg", 10.0f));
   }
   Serial.println("\nVARIOMETER hardware diagnostics / ESP32");
+  Serial.println("Firmware build: " __DATE__ " " __TIME__);
+  Serial.printf("Boot sound setting: %s\n", SOUND_ENABLED_ON_BOOT ? "ON" : "MUTED");
   Serial.println("Required: BMI160 SDO/SA0=3V3, CS/CSB=3V3 (0x69), RTC=0x68, SDA=21 SCL=22.");
   Wire.begin(SDA_PIN, SCL_PIN, 100000);
   Wire.setTimeOut(50);
