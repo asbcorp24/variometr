@@ -98,11 +98,23 @@ int main() {
   assert(m.handle(Key::Ok, Event::Short, 1013.25, 10) == Action::StopBuzzerTest);
   m.handle(Key::Down, Event::Short, 1013.25, 10);
   assert(m.selected == 5);
-  m.handle(Key::Down, Event::Short, 1013.25, 10);
-  assert(m.selected == 0);
-  m.handle(Key::Up, Event::Short, 1013.25, 10);
-  assert(m.selected == 5);
+  m.handle(Key::Ok, Event::Short, 1013.25, 10);
+  assert(m.mode==Mode::Clock&&m.dateField==0);
+  m.date.year=2024;m.date.month=1;m.date.day=31;m.dateField=1;
+  m.handle(Key::Up,Event::Short,1013.25,10);assert(m.date.month==2&&m.date.day==29);
+  m.dateField=5;assert(m.handle(Key::Ok,Event::Short,1013.25,10)==Action::SaveClock);
+  m.handle(Key::Back,Event::Short,1013.25,10);assert(m.mode==Mode::List);
+  m.selected=6;assert(m.handle(Key::Ok,Event::Short,1013.25,10)==Action::OpenTimezone);
+  m.draft=840;m.handle(Key::Up,Event::Repeat,1013.25,10);assert(m.draft==840);
+  assert(m.handle(Key::Ok,Event::Short,1013.25,10)==Action::SaveTimezone);
+  m.handle(Key::Back,Event::Short,1013.25,10);m.selected=7;
+  m.handle(Key::Ok,Event::Short,1013.25,10);assert(m.mode==Mode::ConfirmFlight&&!m.confirm);
+  m.handle(Key::Ok,Event::Short,1013.25,10);assert(m.mode==Mode::List);
+  m.handle(Key::Ok,Event::Short,1013.25,10);m.handle(Key::Up,Event::Short,1013.25,10);
+  assert(m.handle(Key::Ok,Event::Short,1013.25,10)==Action::ToggleFlight);
+  m.mode=Mode::List;m.selected=10;m.handle(Key::Down,Event::Short,1013.25,10);assert(m.selected==0);
+  m.handle(Key::Up,Event::Short,1013.25,10);assert(m.selected==10);
   m.handle(Key::Ok, Event::Short, 1013.25, 10);
   assert(m.mode == Mode::Closed);
-  std::puts("PASS: Bounce2, gestures, menu settings, buzzer test start/stop, six-item navigation");
+  std::puts("PASS: Bounce2, gestures, date/time editing, timezone bounds, flight confirmation, eleven-item navigation");
 }

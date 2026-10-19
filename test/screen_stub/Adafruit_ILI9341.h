@@ -1,0 +1,11 @@
+#pragma once
+#define ILI9341_BLACK 0x0000
+#define ILI9341_WHITE 0xffff
+#define ILI9341_DARKGREY 0x7bef
+#define ILI9341_DARKCYAN 0x03ef
+#define ILI9341_YELLOW 0xffe0
+#define ILI9341_GREEN 0x07e0
+#define ILI9341_ORANGE 0xfd20
+#define ILI9341_RED 0xf800
+#define ILI9341_CYAN 0x07ff
+#define ILI9341_BLUE 0x001f

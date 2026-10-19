@@ -1,7 +1,7 @@
 #include "diagnostic_display.h"
 #include "russian_gfx.h"
+#include "display_panel.h"
 #include <Arduino.h>
-#include <SPI.h>
 #include <Adafruit_ILI9341.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -9,308 +9,262 @@
 
 namespace screen {
 namespace {
-constexpr uint8_t CS = 27, DC = 26, RST = 25;
-constexpr uint8_t DEFAULT_ROTATION = 1; // Portrait on this native-320x240 module.
-// This module's observed native geometry is 320x240, unlike the stock driver's
-// 240x320 assumption. Preserve MADCTL orientation; correct the drawing bounds.
-// This is a panel profile, not an identification of the controller model.
-class ModuleDisplay : public Adafruit_ILI9341 {
- public:
-  using Adafruit_ILI9341::Adafruit_ILI9341;
-  void setRotation(uint8_t r) override {
-    Adafruit_ILI9341::setRotation(r);
-    _width = (r & 1) ? 240 : 320;
-    _height = (r & 1) ? 320 : 240;
-  }
-};
-ru::Display<ModuleDisplay> tft(&SPI, DC, CS, RST);
-const char *labels[RowCount] = {"ДАВЛЕНИЕ / ТЕМПЕРАТУРА", "BMI160 УСКОРЕНИЕ XYZ",
-  "BMI160 ВРАЩЕНИЕ XYZ", "МАГНИТНОЕ ПОЛЕ XYZ", "ЧАСЫ (! = ВРЕМЯ НЕ ЗАДАНО)", "ДИАГНОСТИКА"};
-char values[RowCount][80] = {"ОЖИДАНИЕ", "ОЖИДАНИЕ", "ОЖИДАНИЕ", "ОЖИДАНИЕ", "ОЖИДАНИЕ", "ЗАПУСК"};
-char previous[RowCount][80] = {};
+ru::Display<DisplayPanel> tft;
 bool started = false;
+int page = -1;
+char values[RowCount][96] = {"ОЖИДАНИЕ","ОЖИДАНИЕ","ОЖИДАНИЕ","ОЖИДАНИЕ","ОЖИДАНИЕ","ЗАПУСК"};
+char cache[24][192] = {};
 char batteryPrevious[80] = {};
-int page = -1; // 0 diagnostics, 1 variometer, 2 menu.
+char menuPrevious[384] = {};
+const char *labels[RowCount] = {"ДАВЛЕНИЕ / ТЕМПЕРАТУРА", "BMI160 УСКОРЕНИЕ XYZ", "BMI160 ВРАЩЕНИЕ XYZ",
+  "МАГНИТНОЕ ПОЛЕ XYZ", "ЧАСЫ (! = НУЖНА НАСТРОЙКА)", "ДИАГНОСТИКА"};
+bool large() { return tft.width() >= 320; }
+void text(int x, int y, int size, uint16_t color, const char *value) {
+  tft.setTextSize(size); tft.setTextColor(color); tft.setCursor(x,y); tft.print(value);
 }
-
-void set(Row row, const char *format, ...) {
-  va_list args;
-  va_start(args, format);
-  vsnprintf(values[row], sizeof(values[row]), format, args);
-  va_end(args);
+void clear() {
+  tft.fillScreen(ILI9341_BLACK);
+  memset(cache,0,sizeof(cache)); batteryPrevious[0] = menuPrevious[0] = 0;
 }
-
+bool header(int target, const char *title, bool force) {
+  if (page != target) force = true;
+  page = target;
+  if (force) {
+    clear(); text(8,8,2,ILI9341_WHITE,title);
+    tft.drawFastHLine(8,large()?37:25,tft.width()-16,ILI9341_DARKGREY);
+  }
+  return force;
+}
+void footer(const char *value) { text(8,tft.height()-15,1,ILI9341_YELLOW,value); }
+void field(int key, int x, int y, int w, int h, int size, uint16_t color, const char *value, bool force) {
+  if (!force && strcmp(cache[key],value)==0) return;
+  snprintf(cache[key],sizeof(cache[key]),"%s",value);
+  tft.fillRect(x,y,w,h,ILI9341_BLACK);
+  while (size > 1 && ru::length(value)*6*size > unsigned(w)) --size;
+  text(x,y,size,color,value);
+}
+void duration(char *out, size_t size, uint64_t ms) {
+  const unsigned long seconds=ms/1000;
+  snprintf(out,size,"%02lu:%02lu:%02lu",seconds/3600,(seconds/60)%60,seconds%60);
+}
+const char *ending(flightlog::End end) {
+  switch(end) {
+    case flightlog::End::Active: return "ИДЁТ ЗАПИСЬ";
+    case flightlog::End::Manual: return "ЗАВЕРШЁН";
+    case flightlog::End::PowerLoss: return "ОБРЫВ ПИТАНИЯ / НЕ ЗАВЕРШЁН";
+    case flightlog::End::StorageFull: return "ПАМЯТЬ ЗАПОЛНЕНА";
+    default: return "ОШИБКА ЗАПИСИ";
+  }
+}
+void zoneText(char *out,size_t size,int minutes) {
+  const int a=minutes<0?-minutes:minutes;
+  snprintf(out,size,"UTC%c%02d:%02d",minutes<0?'-':'+',a/60,a%60);
+}
+}
+void set(Row row,const char *format,...) {
+  va_list args; va_start(args,format); vsnprintf(values[row],sizeof(values[row]),format,args); va_end(args);
+}
 void drawBattery(const battery::State &state) {
-  if (!started) return;
-  const bool error = state.mode == battery::Mode::Error;
-  const bool demo = state.mode == battery::Mode::Demo;
-  char percent[12], detail[32], signature[80];
-  if (error) strcpy(percent, "--%");
-  else snprintf(percent, sizeof(percent), "%d%%", int(state.percent + 0.5f));
-  if (error) strcpy(detail, "ОШИБКА");
-  else if (demo) strcpy(detail, "ДЕМО");
-  else snprintf(detail, sizeof(detail), "%.2f В", state.voltage);
-  snprintf(signature, sizeof(signature), "%s %s", percent, detail);
-  if (strcmp(signature, batteryPrevious) == 0) return;
-  strcpy(batteryPrevious, signature);
-  const uint16_t color = error ? ILI9341_RED : demo ? ILI9341_YELLOW :
-                         state.percent <= 20 ? ILI9341_ORANGE : ILI9341_GREEN;
-  tft.fillRect(154, 2, 84, 21, ILI9341_BLACK);
-  tft.drawRect(156, 4, 19, 10, color);
-  tft.fillRect(175, 7, 2, 4, color);
-  if (!error) {
-    const int fill = int(state.percent * 15 / 100 + 0.5f);
-    if (fill > 0) tft.fillRect(158, 6, fill, 6, color);
-  }
-  tft.setTextSize(1); tft.setTextColor(color);
-  tft.setCursor(181, 4); tft.print(percent);
-  tft.setCursor(181, 15); tft.print(detail);
+  if(!started) return;
+  const bool bad=state.mode==battery::Mode::Error;
+  const bool demo=state.mode==battery::Mode::Demo;
+  const bool known=state.mode==battery::Mode::Measured || demo;
+  char percent[20],detail[32],signature[80];
+  if(known) snprintf(percent,sizeof(percent),"%s%d%%",state.estimated?"~":"",int(state.percent+0.5f));
+  else strcpy(percent,"--%");
+  if(bad) strcpy(detail,"ОШИБКА");
+  else if(demo) strcpy(detail,"ДЕМО");
+  else snprintf(detail,sizeof(detail),"%.2f В",state.voltage);
+  snprintf(signature,sizeof(signature),"%s %s",percent,detail);
+  if(strcmp(signature,batteryPrevious)==0) return;
+  strcpy(batteryPrevious,signature);
+  const int x=tft.width()-86;
+  const uint16_t color=bad?ILI9341_RED:demo?ILI9341_YELLOW:known&&state.percent<=20?ILI9341_ORANGE:ILI9341_GREEN;
+  tft.fillRect(x,2,84,22,ILI9341_BLACK);
+  tft.drawRect(x+2,4,19,10,color); tft.fillRect(x+21,7,2,4,color);
+  if(known) { const int w=int(state.percent*15/100+0.5f); if(w>0)tft.fillRect(x+4,6,w,6,color); }
+  text(x+27,4,1,color,percent); text(x+27,15,1,color,detail);
 }
-
 void draw(bool force) {
-  if (!started) return;
-  if (page != 0) force = true;
-  page = 0;
-  if (force) {
-    tft.fillScreen(ILI9341_BLACK); batteryPrevious[0] = 0;
-    tft.setTextSize(2);
-    tft.setTextColor(ILI9341_WHITE);
-    tft.setCursor(5, 5);
-    tft.print("ДИАГНОСТИКА");
-    tft.setTextSize(1);
-    for (int i = 0; i < RowCount; ++i) {
-      tft.setCursor(5, 35 + i * 40);
-      tft.setTextColor(ILI9341_CYAN);
-      tft.print(labels[i]);
-    }
-    tft.drawFastHLine(0, 284, 240, ILI9341_DARKGREY);
-    tft.setTextColor(ILI9341_YELLOW);
-    tft.setCursor(5, 300);
-    tft.print("НАЗАД: ЭКРАН / ЗВУК   ОК: МЕНЮ");
+  if(!started)return;
+  force=header(0,"ДИАГНОСТИКА",force);
+  const int top=large()?56:35,step=large()?60:40;
+  if(force) {
+    for(int i=0;i<RowCount;++i) text(8,top+i*step,1,ILI9341_CYAN,labels[i]);
+    footer("НАЗАД: ЭКРАН  ОК: НАСТРОЙКИ");
   }
-  for (int i = 0; i < RowCount; ++i) {
-    if (!force && strcmp(values[i], previous[i]) == 0) continue;
-    tft.fillRect(5, 49 + i * 40, 230, 16, ILI9341_BLACK);
-    tft.setCursor(5, 49 + i * 40);
-    tft.setTextSize(1);
-    tft.setTextColor(ILI9341_WHITE);
-    tft.print(values[i]);
-    strcpy(previous[i], values[i]);
-  }
+  for(int i=0;i<RowCount;++i)
+    field(i,8,top+14+i*step,tft.width()-16,large()?24:16,large()?2:1,ILI9341_WHITE,values[i],force);
 }
-
-void drawVario(const vario::Filter &f, uint32_t now, bool sound, bool force) {
-  if (!started) return;
-  if (page != 1) force = true;
-  page = 1;
-  static char old[7][96] = {};
-  char text[7][96] = {};
-  const bool fresh = f.fresh(now), ready = f.ready(now);
-  if (ready) {
-    snprintf(text[0], 9, "%+.1f", f.velocity);
-    snprintf(text[1], 9, "%+.1f", f.average);
+void drawVario(const vario::Filter &f,uint32_t now,bool sound,const FlightJournal &journal,bool force) {
+  if(!started)return;
+  force=header(1,"ВАРИОМЕТР",force);
+  const bool big=large(),fresh=f.fresh(now),ready=f.ready(now);
+  char s[9][128] = {};
+  if(ready) { snprintf(s[0],sizeof(s[0]),"%+.1f",f.velocity); snprintf(s[1],sizeof(s[1]),"%+.1f",f.average); }
+  else { strcpy(s[0],fresh?"ЖДИТЕ":"---"); strcpy(s[1],"---"); }
+  if(fresh) { snprintf(s[2],sizeof(s[2]),"%.0f",f.height); snprintf(s[3],sizeof(s[3]),"%+.0f",f.relative()); }
+  else { strcpy(s[2],"---");strcpy(s[3],"---"); }
+  snprintf(s[4],sizeof(s[4]),"QNH %.2f  СРЕД. %.0fс",f.qnh,f.averageSeconds);
+  snprintf(s[5],sizeof(s[5]),"%s",values[Rtc]);
+  snprintf(s[6],sizeof(s[6]),"%s | %s",ready?"ГОТОВ":fresh?"ПРОГРЕВ":"ОШИБКА БАРО",sound?"ЗВУК ВКЛ":"БЕЗ ЗВУКА");
+  char time[24]; duration(time,sizeof(time),journal.current().durationMs);
+  snprintf(s[7],sizeof(s[7]),journal.active()?"ЗАПИСЬ #%lu  %s":"ПОЛЁТОВ: %lu",static_cast<unsigned long>(journal.active()?journal.current().id:journal.count()),time);
+  if(!journal.ready() || journal.error()[0]) snprintf(s[8],sizeof(s[8]),"%s",journal.error());
+  if(force) {
+    text(8,big?71:45,big?2:1,ILI9341_CYAN,"ВЕРТ. СКОРОСТЬ м/с");
+    text(8,big?160:110,big?2:1,ILI9341_CYAN,"СРЕДНЯЯ м/с");
+    text(8,big?211:155,1,ILI9341_CYAN,"ВЫСОТА QNH / м");
+    text(big?168:125,big?211:155,1,ILI9341_CYAN,"ОТНОСИТ. / м");
+    text(8,big?313:235,1,ILI9341_CYAN,"ЧАСЫ (! = НУЖНА НАСТРОЙКА)");
+    footer("НАЗАД: ЭКРАН  ОК: НАСТРОЙКИ");
+  }
+  const int x[9]={8,big?192:125,8,big?168:125,8,8,8,8,8};
+  const int y[9]={big?99:62,big?157:108,big?231:173,big?231:173,big?278:213,big?335:253,big?48:28,big?389:274,big?421:287};
+  const int w[9]={tft.width()-16,big?120:110,big?144:110,big?144:110,tft.width()-16,tft.width()-16,tft.width()-16,tft.width()-16,tft.width()-16};
+  const int size[9]={big?5:4,big?3:2,big?3:2,big?3:2,big?2:1,big?2:1,1,1,1};
+  for(int i=0;i<9;++i) field(i,x[i],y[i],w[i],size[i]*8,size[i],i==0&&ready?(f.velocity>=0?ILI9341_GREEN:ILI9341_ORANGE):i==7&&journal.active()?ILI9341_RED:ILI9341_WHITE,s[i],force);
+}
+void drawMenu(const buttons::Menu &menu,double qnh,double average,bool sound,const char *notice,bool testRunning,
+              const FlightJournal &journal,size_t journalIndex,const DeviceClock &clock,const battery::State &battery,bool force) {
+  if(!started)return;
+  const bool big=large();
+  char signature[384];
+  snprintf(signature,sizeof(signature),"%d/%d/%.2f/%d/%d/%d/%d/%d/%d/%d/%d/%u/%u/%u/%d/%d/%.2f/%s",int(menu.mode),menu.selected,menu.draft,menu.confirm,
+      menu.date.year,menu.date.month,menu.date.day,menu.date.hour,menu.date.minute,menu.date.second,menu.dateField,
+      unsigned(journal.revision()),unsigned(journalIndex),unsigned(journal.current().durationMs/1000),sound,testRunning,battery.voltage,notice);
+  if(page!=2)force=true;
+  if(!force&&strcmp(signature,menuPrevious)==0)return;
+  const char *title=menu.mode==buttons::Mode::Journal?"ЖУРНАЛ":menu.mode==buttons::Mode::Clock?"ДАТА И ВРЕМЯ":"НАСТРОЙКИ";
+  header(2,title,true); strcpy(menuPrevious,signature);
+  const int top=big?60:42,step=big?38:30;
+  if(menu.mode==buttons::Mode::List) {
+    char rows[buttons::MenuCount][80];
+    snprintf(rows[0],sizeof(rows[0]),"QNH %.2f гПа",qnh);
+    snprintf(rows[1],sizeof(rows[1]),"СРЕДНЕЕ %.0f с",average);
+    snprintf(rows[2],sizeof(rows[2]),"ЗВУК %s",sound?"ВКЛ":"ВЫКЛ");
+    strcpy(rows[3],"ОБНУЛИТЬ ВЫСОТУ"); strcpy(rows[4],"ТЕСТ ПИЩАЛКИ");
+    strcpy(rows[5],"ДАТА И ВРЕМЯ");strcpy(rows[6],"ЧАСОВОЙ ПОЯС");
+    strcpy(rows[7],journal.active()?"ЗАВЕРШИТЬ ПОЛЁТ":"НАЧАТЬ ПОЛЁТ");strcpy(rows[8],"ЖУРНАЛ ПОЛЁТОВ");
+    strcpy(rows[9],"АККУМУЛЯТОР");strcpy(rows[10],"НАЗАД");
+    const int visible=big?9:6, first=(menu.selected/visible)*visible;
+    for(int i=first;i<buttons::MenuCount&&i<first+visible;++i) {
+      const int y=top+(i-first)*step;
+      if(i==menu.selected)tft.fillRect(4,y-4,tft.width()-8,28,ILI9341_DARKCYAN);
+      text(8,y,2,ILI9341_WHITE,rows[i]);
+    }
+    char position[40];snprintf(position,sizeof(position),"%d/%d  ВВЕРХ/ВНИЗ: ВЫБОР",menu.selected+1,buttons::MenuCount);
+    text(8,tft.height()-49,1,ILI9341_CYAN,position);
+  } else if(menu.mode==buttons::Mode::Clock) {
+    const char *names[]={"ГОД","МЕСЯЦ","ДЕНЬ","ЧАСЫ","МИНУТЫ","СЕКУНДЫ"};
+    const int v[]={menu.date.year,menu.date.month,menu.date.day,menu.date.hour,menu.date.minute,menu.date.second};
+    for(int i=0;i<6;++i) {
+      if(i==menu.dateField)tft.fillRect(4,top+i*step-4,tft.width()-8,28,ILI9341_DARKCYAN);
+      char row[64];snprintf(row,sizeof(row),"%s: %02d",names[i],v[i]);text(8,top+i*step,2,ILI9341_WHITE,row);
+    }
+    text(8,tft.height()-49,1,ILI9341_YELLOW,"ОК: СЛЕДУЮЩЕЕ / СОХРАНИТЬ");
+  } else if(menu.mode==buttons::Mode::Timezone) {
+    text(8,top,2,ILI9341_WHITE,"ЧАСОВОЙ ПОЯС");
+    char zone[32];zoneText(zone,sizeof(zone),int(menu.draft));text(8,top+48,big?3:2,ILI9341_GREEN,zone);
+    text(8,top+100,1,ILI9341_WHITE,"ВВЕРХ/ВНИЗ: ШАГ 15 МИНУТ");
+    text(8,top+122,1,ILI9341_WHITE,"UTC -12:00 ... +14:00");
+    text(8,top+144,1,ILI9341_WHITE,"ВРЕМЯ В ЖУРНАЛЕ ХРАНИТСЯ В UTC");
+  } else if(menu.mode==buttons::Mode::Journal) {
+    if(!journal.ready())text(8,top,1,ILI9341_RED,journal.error());
+    else if(!journal.count())text(8,top,2,ILI9341_WHITE,"ПОЛЁТОВ ПОКА НЕТ");
+    else {
+      const auto &r=journal.record(journalIndex);
+      uint64_t total=0;unsigned complete=0;
+      for(size_t i=0;i<journal.count();++i){ total+=journal.record(i).durationMs;if(journal.record(i).end==flightlog::End::Manual)++complete; }
+      char row[144], time[32];duration(time,sizeof(time),total);
+      snprintf(row,sizeof(row),"ВСЕГО: %u  ЗАВЕРШЕНО: %u",unsigned(journal.count()),complete);text(8,top,1,ILI9341_CYAN,row);
+      snprintf(row,sizeof(row),"ОБЩЕЕ ВРЕМЯ: %s",time);text(8,top+16,1,ILI9341_CYAN,row);
+      const int y=top+40,dy=big?31:23;
+      snprintf(row,sizeof(row),"ПОЛЁТ #%lu  %u/%u",static_cast<unsigned long>(r.id),unsigned(journalIndex+1),unsigned(journal.count()));text(8,y,big?2:1,ILI9341_WHITE,row);
+      if(r.clockTrusted) {
+        const auto d=calendar::civil(r.startUtc+int64_t(clock.zoneMinutes)*60);
+        snprintf(row,sizeof(row),"%04d-%02d-%02d %02d:%02d:%02d",d.year,d.month,d.day,d.hour,d.minute,d.second);
+      } else strcpy(row,"ДАТА НЕ ЗАДАНА");
+      text(8,y+dy,1,ILI9341_WHITE,row);
+      duration(time,sizeof(time),r.durationMs);snprintf(row,sizeof(row),"ДЛИТЕЛЬНОСТЬ %s",time);text(8,y+dy*2,1,ILI9341_WHITE,row);
+      snprintf(row,sizeof(row),"МАКС. ВЫСОТА %.1f м",r.maxAltitude);text(8,y+dy*3,1,ILI9341_WHITE,row);
+      snprintf(row,sizeof(row),"МАКС. НАБОР %.1f м",r.maxGain);text(8,y+dy*4,1,ILI9341_WHITE,row);
+      snprintf(row,sizeof(row),"НАБОР %+.1f / СПУСК %+.1f м/с",r.maxClimb,r.minClimb);text(8,y+dy*5,1,ILI9341_WHITE,row);
+      text(8,y+dy*6,1,r.end==flightlog::End::Manual?ILI9341_GREEN:ILI9341_YELLOW,ending(r.end));
+      text(8,tft.height()-49,1,ILI9341_CYAN,"ВВЕРХ/ВНИЗ: ДРУГОЙ ПОЛЁТ");
+    }
+  } else if(menu.mode==buttons::Mode::ConfirmZero||menu.mode==buttons::Mode::ConfirmFlight) {
+    const char *prompt=menu.mode==buttons::Mode::ConfirmZero?"ОБНУЛИТЬ ВЫСОТУ?":journal.active()?"ЗАВЕРШИТЬ ПОЛЁТ?":"НАЧАТЬ ПОЛЁТ?";
+    text(8,top,2,ILI9341_WHITE,prompt);
+    if(menu.mode==buttons::Mode::ConfirmFlight&&!clock.trusted(millis()))text(8,top+40,1,ILI9341_YELLOW,"ДАТА НЕ ЗАДАНА: ЖУРНАЛ БЕЗ ДАТЫ");
+    tft.fillRect(menu.confirm?tft.width()/2+4:4,top+88,tft.width()/2-8,32,ILI9341_DARKCYAN);
+    text(20,top+96,2,ILI9341_WHITE,"НЕТ");text(tft.width()/2+20,top+96,2,ILI9341_WHITE,"ДА");
+  } else if(menu.mode==buttons::Mode::BuzzerTest) {
+    text(8,top,2,ILI9341_WHITE,"ТЕСТ ПИЩАЛКИ");text(8,top+42,2,ILI9341_YELLOW,testRunning?"ЗВУЧИТ...":"ТЕСТ ЗАВЕРШЁН");
+    text(8,top+90,1,ILI9341_WHITE,"ИМПУЛЬС, ЗАТЕМ 700/1400/2100 Гц");
+    text(8,top+112,1,ILI9341_WHITE,"ПОСЛЕ ТЕСТА ЗВУК ВАРИО ВЫКЛЮЧЕН");
   } else {
-    strcpy(text[0], fresh ? "ЖДИТЕ" : "---");
-    strcpy(text[1], "---");
-  }
-  if (fresh) {
-    snprintf(text[2], 9, "%.0f", f.height);
-    snprintf(text[3], 9, "%+.0f", f.relative());
-  } else { strcpy(text[2], "---"); strcpy(text[3], "---"); }
-  snprintf(text[4], sizeof(text[4]), "QNH %.2f  СРЕД. %.0fс", f.qnh, f.averageSeconds);
-  snprintf(text[5], sizeof(text[5]), "%s", values[Rtc]);
-  snprintf(text[6], sizeof(text[6]), "%s | %s", ready ? "ГОТОВ" : fresh ? "ПРОГРЕВ" : "ОШИБКА БАРО",
-           sound ? "ЗВУК ВКЛ" : "БЕЗ ЗВУКА");
-  if (force) {
-    tft.fillScreen(ILI9341_BLACK); batteryPrevious[0] = 0;
-    tft.setTextSize(2); tft.setTextColor(ILI9341_WHITE); tft.setCursor(5, 5);
-    tft.print("ВАРИОМЕТР");
-    tft.setTextSize(1); tft.setTextColor(ILI9341_CYAN);
-    tft.setCursor(5, 45); tft.print("ВЕРТ. СКОРОСТЬ м/с");
-    tft.setCursor(5, 110); tft.print("СРЕДНЯЯ м/с");
-    tft.drawFastHLine(5, 143, 230, ILI9341_DARKGREY);
-    tft.setCursor(5, 155); tft.print("ВЫСОТА QNH / м");
-    tft.setCursor(125, 155); tft.print("ОТНОСИТ. / м");
-    tft.drawFastHLine(5, 199, 230, ILI9341_DARKGREY);
-    tft.setCursor(5, 235); tft.print("ЧАСЫ (! = ЗАДАЙТЕ ВРЕМЯ)");
-    tft.drawFastHLine(5, 284, 230, ILI9341_DARKGREY);
-    tft.setTextColor(ILI9341_YELLOW); tft.setCursor(5, 300);
-    tft.print("НАЗАД: ЭКРАН / ЗВУК   ОК: МЕНЮ");
-  }
-  const int x[7] = {5, 125, 5, 125, 5, 5, 5};
-  const int y[7] = {62, 108, 173, 173, 213, 253, 28};
-  const int w[7] = {230, 110, 110, 110, 230, 230, 230};
-  const int size[7] = {4, 2, 2, 2, 1, 1, 1};
-  for (int i = 0; i < 7; ++i) {
-    if (!force && strcmp(old[i], text[i]) == 0) continue;
-    tft.fillRect(x[i], y[i], w[i], size[i] * 8, ILI9341_BLACK);
-    tft.setTextColor(i == 0 && ready ? (f.velocity >= 0 ? ILI9341_GREEN : ILI9341_ORANGE) : ILI9341_WHITE);
-    // Fit unusually long readings inside their own field.
-    const int fontSize = ru::length(text[i]) * 6 * size[i] <= unsigned(w[i]) ? size[i] : 1;
-    tft.setTextSize(fontSize); tft.setCursor(x[i], y[i]); tft.print(text[i]);
-    strcpy(old[i], text[i]);
-  }
-}
-
-void drawMenu(const buttons::Menu &menu, double qnh, double average, bool sound,
-              const char *notice, bool testRunning, bool force) {
-  if (!started) return;
-  if (page != 2) force = true;
-  page = 2;
-  static char previousMenu[256] = {};
-  char signature[256];
-  snprintf(signature, sizeof(signature), "%d %d %.2f %d %.2f %.2f %d %d %s",
-           int(menu.mode), menu.selected, menu.draft, menu.confirm, qnh, average, sound, testRunning, notice);
-  if (!force && strcmp(signature, previousMenu) == 0) return;
-  strcpy(previousMenu, signature);
-  tft.fillScreen(ILI9341_BLACK); batteryPrevious[0] = 0;
-  tft.setTextColor(ILI9341_WHITE); tft.setTextSize(2); tft.setCursor(8, 8);
-  tft.print("НАСТРОЙКИ");
-  if (menu.mode == buttons::Mode::List) {
-    char rows[6][80];
-    snprintf(rows[0], sizeof(rows[0]), "QNH       %.2f", qnh);
-    snprintf(rows[1], sizeof(rows[1]), "СРЕДНЕЕ   %.1fс", average);
-    snprintf(rows[2], sizeof(rows[2]), "ЗВУК      %s", sound ? "ВКЛ" : "ВЫКЛ");
-    strcpy(rows[3], "ОБНУЛИТЬ ВЫСОТУ");
-    strcpy(rows[4], "ТЕСТ ПИЩАЛКИ"); strcpy(rows[5], "НАЗАД");
-    for (int i = 0; i < 6; ++i) {
-      const bool selected = menu.selected == i;
-      if (selected) tft.fillRect(4, 38 + i * 32, 232, 28, ILI9341_DARKCYAN);
-      tft.setTextColor(ILI9341_WHITE); tft.setCursor(10, 44 + i * 32);
-      tft.print(rows[i]);
+    const bool cells=menu.mode==buttons::Mode::BatteryCells,q=menu.mode==buttons::Mode::Qnh;
+    text(8,top,2,ILI9341_WHITE,cells?"АККУМУЛЯТОР / S":q?"QNH / гПа":"УСРЕДНЕНИЕ / с");
+    char value[40];snprintf(value,sizeof(value),cells?"%.0fS":q?"%.2f":"%.0f",menu.draft);
+    text(8,top+40,4,ILI9341_GREEN,value);
+    text(8,top+92,1,ILI9341_WHITE,cells?"ПОСЛЕДОВАТЕЛЬНЫХ ЯЧЕЕК: 1..6":q?"ШАГ 0.1 гПа, 800..1100":"ШАГ 1 с, 1..30");
+    if(cells){
+      text(8,top+114,1,ILI9341_YELLOW,"ТОЛЬКО Li-ion 4.2 В НА ЯЧЕЙКУ");
+      text(8,top+136,1,ILI9341_YELLOW,"ПРОЦЕНТ ~: ОЦЕНКА ПО НАПРЯЖЕНИЮ");
+      if(!std::isfinite(battery.voltage))strcpy(value,"НЕТ ДАННЫХ ДАТЧИКА");
+      else if(std::isfinite(battery.currentAmps))snprintf(value,sizeof(value),"%.2f В  %.3f А",battery.voltage,battery.currentAmps);
+      else snprintf(value,sizeof(value),"%.2f В / ТОК НЕ ЗАДАН",battery.voltage);
+      text(8,top+158,1,ILI9341_WHITE,value);
     }
-  } else if (menu.mode == buttons::Mode::BuzzerTest) {
-    tft.setCursor(8, 55); tft.print("ТЕСТ ПИЩАЛКИ");
-    tft.setCursor(8, 90); tft.setTextColor(ILI9341_YELLOW);
-    tft.print(testRunning ? "ЗВУЧИТ..." : "ТЕСТ ЗАВЕРШЁН");
-    tft.setTextSize(1); tft.setTextColor(ILI9341_WHITE);
-    tft.setCursor(8, 125); tft.print("ИМПУЛЬС, ЗАТЕМ 700 / 1400 / 2100 Гц");
-    tft.setCursor(8, 145); tft.print("ПОСЛЕ ТЕСТА ЗВУК ВАРИО ВЫКЛЮЧЕН.");
-    tft.setCursor(8, 300); tft.print("ОК / НАЗАД: СТОП И ВОЗВРАТ");
-    return;
-  } else if (menu.mode == buttons::Mode::ConfirmZero) {
-    tft.setCursor(8, 55); tft.print("ОБНУЛИТЬ ВЫСОТУ?");
-    tft.setCursor(8, 90); tft.setTextColor(ILI9341_YELLOW); tft.print("ПО УМОЛЧАНИЮ: НЕТ");
-    tft.fillRect(menu.confirm ? 125 : 5, 128, 110, 36, ILI9341_DARKCYAN);
-    tft.setTextColor(ILI9341_WHITE);
-    tft.setCursor(30, 139); tft.print("НЕТ");
-    tft.setCursor(150, 139); tft.print("ДА");
-  } else {
-    const bool isQnh = menu.mode == buttons::Mode::Qnh;
-    tft.setCursor(8, 55); tft.print(isQnh ? "QNH / гПа" : "УСРЕДНЕНИЕ / с");
-    char value[20]; snprintf(value, sizeof(value), isQnh ? "%.2f" : "%.1f", menu.draft);
-    tft.setTextSize(4); tft.setCursor(8, 90); tft.setTextColor(ILI9341_GREEN); tft.print(value);
-    tft.setTextSize(1); tft.setTextColor(ILI9341_WHITE); tft.setCursor(8, 145);
-    tft.print(isQnh ? "ШАГ 0.1 гПа   ДИАПАЗОН 800..1100" : "ШАГ 1 с   ДИАПАЗОН 1..30");
-    tft.setCursor(8, 165); tft.print("УДЕРЖАНИЕ +/-: ПОВТОР. ОК: СОХРАНИТЬ");
   }
-  tft.setTextSize(1); tft.setTextColor(ILI9341_YELLOW);
-  tft.setCursor(8, 260); tft.print(notice);
-  tft.setCursor(8, 291); tft.print("ВВЕРХ/ВНИЗ: ВЫБОР  ОК: ПРИНЯТЬ");
-  tft.setCursor(8, 303); tft.print("НАЗАД: ОТМЕНА");
+  if(notice&&notice[0])text(8,tft.height()-33,1,ILI9341_YELLOW,notice);
+  footer(menu.mode==buttons::Mode::BuzzerTest?"ОК/НАЗАД: СТОП И ВОЗВРАТ":"ОК: ПРИНЯТЬ  НАЗАД: ОТМЕНА");
 }
-
-void drawCompass(const compass::Heading &heading, uint32_t now, bool force) {
-  if (!started) return;
-  if (page != 3) force = true;
-  page = 3;
-  static ru::Display<GFXcanvas1> dial(176, 176);
-  static int previousDegrees = -2;
-  const bool fresh = heading.fresh(now);
-  const int degrees = fresh ? int(heading.degrees + 0.5f) % 360 : -1;
-  if (force) {
-    tft.fillScreen(ILI9341_BLACK); batteryPrevious[0] = 0;
-    tft.setTextSize(2); tft.setTextColor(ILI9341_WHITE); tft.setCursor(8, 5);
-    tft.print("КОМПАС");
-    tft.setTextSize(1); tft.setTextColor(ILI9341_YELLOW);
-    tft.setCursor(8, 28); tft.print("БЕЗ КАЛИБРОВКИ. ДЕРЖИТЕ РОВНО.");
-    tft.setCursor(8, 302); tft.print("НАЗАД: ЭКРАН   ОК: МЕНЮ");
-  }
-  if (!force && degrees == previousDegrees) return;
-  previousDegrees = degrees;
-  if (!dial.getBuffer()) {
-    tft.setTextSize(1); tft.setCursor(8, 50); tft.print("НЕТ ПАМЯТИ ДЛЯ КОМПАСА");
-    return;
-  }
-  dial.fillScreen(0);
-  dial.drawCircle(88, 88, 80, 1);
-  // Fixed bow marker; the compass card rotates beneath it.
-  dial.fillTriangle(82, 1, 94, 1, 88, 10, 1);
-  if (fresh) {
-    for (int bearing = 0; bearing < 360; bearing += 15) {
-      const float a = (bearing - degrees) * 3.141592654f / 180;
-      const int inner = bearing % 90 == 0 ? 68 : 74;
-      dial.drawLine(88 + lroundf(sinf(a) * inner), 88 - lroundf(cosf(a) * inner),
-                    88 + lroundf(sinf(a) * 79), 88 - lroundf(cosf(a) * 79), 1);
-    }
-    const char *cardinals[4] = {"С", "В", "Ю", "З"};
-    dial.setTextSize(2); dial.setTextColor(1);
-    for (int i = 0; i < 4; ++i) {
-      const float a = (i * 90 - degrees) * 3.141592654f / 180;
-      dial.setCursor(82 + lroundf(sinf(a) * 55), 80 - lroundf(cosf(a) * 55));
-      dial.print(cardinals[i]);
-    }
-    dial.drawLine(88, 102, 88, 73, 1);
-    dial.fillTriangle(88, 66, 82, 77, 94, 77, 1);
-  } else {
-    dial.setTextSize(1); dial.setTextColor(1);
-    dial.setCursor(49, 84); dial.print("НЕТ ДАННЫХ");
-  }
-  // Send whole scanlines rather than starting an SPI address window for every pixel.
-  uint16_t scanline[176];
-  const uint8_t *bitmap = dial.getBuffer();
-  for (int y = 0; y < 176; ++y) {
-    for (int x = 0; x < 176; ++x)
-      scanline[x] = bitmap[y * 22 + x / 8] & (0x80 >> (x % 8)) ? ILI9341_WHITE : ILI9341_BLACK;
-    tft.drawRGBBitmap(32, 58 + y, scanline, 176, 1);
-  }
-  tft.fillRect(8, 255, 224, 32, ILI9341_BLACK);
-  tft.setTextSize(2); tft.setTextColor(ILI9341_CYAN); tft.setCursor(30, 263);
-  if (fresh) {
-    const char *names[8] = {"С", "СВ", "В", "ЮВ", "Ю", "ЮЗ", "З", "СЗ"};
-    char value[20]; snprintf(value, sizeof(value), "%03d гр.", degrees);
-    tft.print(value);
-    tft.setCursor(150, 263); tft.print(names[((degrees + 22) / 45) % 8]);
-  } else tft.print("--- гр.");
+void drawCompass(const compass::Heading &heading,uint32_t now,bool force) {
+  if(!started)return;
+  force=header(3,"КОМПАС",force);
+  const bool big=large(),fresh=heading.fresh(now);
+  const int degrees=fresh?int(heading.degrees+0.5f)%360:-1;
+  static int oldDegrees=-2;
+  if(force){text(8,big?48:30,1,ILI9341_YELLOW,"БЕЗ КАЛИБРОВКИ. ДЕРЖИТЕ РОВНО.");footer("НАЗАД: ЭКРАН  ОК: НАСТРОЙКИ");}
+  if(!force&&degrees==oldDegrees)return;
+  oldDegrees=degrees;
+  static ru::Display<GFXcanvas1> dial(big?256:176,big?256:176);
+  if(!dial.getBuffer()){text(8,70,1,ILI9341_RED,"НЕТ ПАМЯТИ ДЛЯ КОМПАСА");return;}
+  const int D=dial.width(),c=D/2,R=c-9;
+  dial.fillScreen(0);dial.drawCircle(c,c,R,1);dial.fillTriangle(c-6,1,c+6,1,c,10,1);
+  if(fresh){
+    for(int bearing=0;bearing<360;bearing+=15){const float a=(bearing-degrees)*PI/180;
+      const int inner=R-(bearing%90==0?12:6);
+      dial.drawLine(c+lroundf(sinf(a)*inner),c-lroundf(cosf(a)*inner),c+lroundf(sinf(a)*(R-1)),c-lroundf(cosf(a)*(R-1)),1);}
+    const char *names[]={"С","В","Ю","З"};dial.setTextSize(big?3:2);dial.setTextColor(1);
+    for(int i=0;i<4;++i){const float a=(i*90-degrees)*PI/180;dial.setCursor(c-(big?9:6)+lroundf(sinf(a)*(R-25)),c-(big?12:8)-lroundf(cosf(a)*(R-25)));dial.print(names[i]);}
+    dial.drawLine(c,c+14,c,c-15,1);dial.fillTriangle(c,c-22,c-6,c-11,c+6,c-11,1);
+  }else{dial.setTextSize(1);dial.setTextColor(1);dial.setCursor(c-30,c-4);dial.print("НЕТ ДАННЫХ");}
+  uint16_t line[256];const auto *bits=dial.getBuffer();
+  for(int y=0;y<D;++y){for(int x=0;x<D;++x)line[x]=(bits[y*(D/8)+x/8]&(0x80>>(x%8)))?ILI9341_WHITE:ILI9341_BLACK;
+    tft.drawRGBBitmap((tft.width()-D)/2,(big?74:58)+y,line,D,1);}
+  char value[48];const char *names[]={"С","СВ","В","ЮВ","Ю","ЮЗ","З","СЗ"};
+  if(fresh)snprintf(value,sizeof(value),"%03d гр.  %s",degrees,names[((degrees+22)/45)%8]);else strcpy(value,"--- гр.");
+  field(20,16,big?365:263,tft.width()-32,big?32:24,big?3:2,ILI9341_CYAN,value,true);
 }
-
-void geometryTest(uint8_t rotation) {
-  if (!started) return;
-  tft.setRotation(rotation);
-  const int w = tft.width(), h = tft.height();
-  tft.fillScreen(ILI9341_DARKGREY);
-  for (int y = 20; y < h - 1; y += 20)
-    tft.drawFastHLine(1, y, w - 2, ILI9341_BLUE);
-  tft.drawRect(0, 0, w, h, ILI9341_WHITE);
-  tft.fillRect(2, 2, 12, 12, ILI9341_RED);
-  tft.fillRect(w - 14, 2, 12, 12, ILI9341_GREEN);
-  tft.fillRect(2, h - 14, 12, 12, ILI9341_BLUE);
-  tft.fillRect(w - 14, h - 14, 12, 12, ILI9341_YELLOW);
-  tft.setTextSize(2); tft.setTextColor(ILI9341_WHITE, ILI9341_DARKGREY);
-  tft.setCursor(20, 30); tft.print("ТЕСТ ЭКРАНА");
-  char label[32];
-  snprintf(label, sizeof(label), "R%u: %d x %d", rotation % 4, w, h);
-  tft.setCursor(20, 60); tft.print(label);
-  tft.setTextSize(1);
-  tft.setCursor(20, h - 30); tft.print("g: ПОВОРОТ   t: ВОЗВРАТ");
-  Serial.printf("Display geometry R%u: width=%d height=%d; all four corners must be visible.\n",
-                rotation % 4, w, h);
-  page = -1;
+void geometryTest(uint8_t rotation){
+  if(!started)return;
+  tft.setRotation(rotation);clear();page=-1;
+  const int w=tft.width(),h=tft.height();
+  tft.drawRect(0,0,w,h,ILI9341_WHITE);
+  for(int y=20;y<h-1;y+=20)tft.drawFastHLine(1,y,w-2,ILI9341_BLUE);
+  tft.fillRect(2,2,12,12,ILI9341_RED);tft.fillRect(w-14,2,12,12,ILI9341_GREEN);
+  tft.fillRect(2,h-14,12,12,ILI9341_BLUE);tft.fillRect(w-14,h-14,12,12,ILI9341_YELLOW);
+  char value[40];snprintf(value,sizeof(value),"R%u: %d x %d",rotation%4,w,h);
+  text(20,36,2,ILI9341_WHITE,"ТЕСТ ЭКРАНА");text(20,66,2,ILI9341_WHITE,value);footer("g: ПОВОРОТ  t: ВОЗВРАТ");
+  Serial.printf("Display R%u: width=%d height=%d\n",rotation%4,w,h);
 }
-
-void endGeometryTest() {
-  tft.setRotation(DEFAULT_ROTATION);
-  page = -1;
-}
-
-void begin() {
-  SPI.begin(18, 19, 23, CS);
-  tft.begin(10000000); // Lower SPI clock while checking artifacts on jumper wiring.
-  tft.setRotation(DEFAULT_ROTATION); // Portrait with corrected bounds: width 240, height 320.
-  Serial.printf("Display profile: native 320x240, rotation=%u, width=%d height=%d\n",
-                DEFAULT_ROTATION, tft.width(), tft.height());
-  tft.setTextWrap(false);
-  started = true;
-  draw(true);
+void endGeometryTest(){tft.setRotation(DisplayPanel::DefaultRotation);page=-1;}
+void begin(){
+  SPI.begin(18,19,23,27);tft.begin(DisplayPanel::SpiFrequency);tft.setRotation(DisplayPanel::DefaultRotation);tft.setTextWrap(false);
+  Serial.printf("Display: width=%d height=%d rotation=%u\n",tft.width(),tft.height(),DisplayPanel::DefaultRotation);
+  started=true;draw(true);
 }
 }

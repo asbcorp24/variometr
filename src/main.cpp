@@ -6,6 +6,9 @@
 #include <Preferences.h>
 #include <Bounce2.h>
 #include <cstdlib>
+#include "rtc_clock.h"
+#include "flight_journal.h"
+#include "power_monitor.h"
 
 constexpr uint8_t SDA_PIN = 21, SCL_PIN = 22, BUZZER_PIN = 14;
 constexpr bool SOUND_ENABLED_ON_BOOT = true;
@@ -46,6 +49,11 @@ char menuNotice[100] = {};
 int geometryRotation = -1;
 battery::State batteryState;
 uint32_t batteryTime = 0;
+DeviceClock deviceClock;
+FlightJournal journal;
+PowerMonitor powerMonitor;
+int batteryCells = 0; // Confirm cell count in the on-device menu before estimating percent.
+size_t journalIndex = 0;
 
 bool readBytes(uint8_t address, uint8_t reg, uint8_t *data, size_t count, TwoWire &bus = Wire) {
   bus.beginTransmission(address);
@@ -58,30 +66,15 @@ bool readBytes(uint8_t address, uint8_t reg, uint8_t *data, size_t count, TwoWir
 
 void batteryTick(uint32_t now, bool force = false) {
   batteryState.expire(now);
-  const uint32_t interval = batteryState.mode == battery::Mode::Demo ? 5000 : 1000;
-  if (!force && uint32_t(now - batteryTime) < interval) return;
+  if (!force && uint32_t(now - batteryTime) < 1000) return;
   batteryTime = now;
-  const battery::Mode previous = batteryState.mode;
-  Wire.beginTransmission(battery::Address);
-  const uint8_t result = Wire.endTransmission();
-  if (result == 2) batteryState.missing(); // Address NACK: module absent/unpowered.
-  else if (result != 0) batteryState.error();
-  else {
-    uint8_t version[2], data[4];
-    if (!readBytes(battery::Address, 0x08, version, 2) ||
-        !readBytes(battery::Address, 0x02, data, 4)) batteryState.error();
-    else batteryState.update((uint16_t(version[0]) << 8) | version[1],
-                             (uint16_t(data[0]) << 8) | data[1],
-                             (uint16_t(data[2]) << 8) | data[3], millis());
-  }
-  if (force || previous != batteryState.mode) {
-    if (batteryState.mode == battery::Mode::Demo) Serial.println("Battery: DEMO 100%, MAX17048 absent at 0x36");
-    else if (batteryState.mode == battery::Mode::Measured)
-      Serial.printf("Battery: MAX17048-compatible, %.1f%%, %.3f V\n", batteryState.percent, batteryState.voltage);
-    else Serial.println("Battery: read/identity error; percentage unknown");
-  }
+  const auto previous = batteryState.mode;
+  powerMonitor.read(batteryState, batteryCells);
+  if (force || previous != batteryState.mode)
+    Serial.printf("Battery: mode=%u voltage=%.3fV percent=%.1f%s current=%.3fA cells=%d\n",
+      unsigned(batteryState.mode), batteryState.voltage, batteryState.percent,
+      batteryState.estimated ? " estimated" : "", batteryState.currentAmps, batteryCells);
 }
-
 bool writeRegister(uint8_t address, uint8_t reg, uint8_t value, TwoWire &bus = Wire) {
   bus.beginTransmission(address);
   bus.write(reg);
@@ -391,37 +384,19 @@ void compassTick(uint32_t now) {
   magneticHeading.update(values[0], values[qmcReady ? 1 : 2], millis());
 }
 
-int bcd(uint8_t value) {
-  if ((value & 15) > 9 || (value >> 4) > 9) return -1;
-  return (value >> 4) * 10 + (value & 15);
-}
-
 void printRtc(bool log = true) {
-  uint8_t r[7], status = 0;
-  if (!readBytes(0x68, 0, r, sizeof(r)) || !readBytes(0x68, 0x0F, &status, 1)) {
-    screen::set(screen::Rtc, "НЕТ ОТВЕТА");
-    if (log) Serial.println("RTC: no response");
+  if (!deviceClock.read()) {
+    screen::set(screen::Rtc, "НЕТ ОТВЕТА ЧАСОВ");
+    if (log) Serial.println("RTC: read or calendar error");
     return;
   }
-  int second = bcd(r[0]), minute = bcd(r[1]);
-  int hour = bcd(r[2] & ((r[2] & 0x40) ? 0x1F : 0x3F));
-  bool validHour = (r[2] & 0x40) ? hour >= 1 && hour <= 12 : hour >= 0 && hour <= 23;
-  if (r[2] & 0x40) hour = hour % 12 + ((r[2] & 0x20) ? 12 : 0);
-  int day = bcd(r[4]), month = bcd(r[5] & 0x1F), year = bcd(r[6]);
-  if (second < 0 || second > 59 || minute < 0 || minute > 59 || !validHour ||
-      day < 1 || day > 31 || month < 1 || month > 12 || year < 0 || r[3] < 1 || r[3] > 7) {
-    screen::set(screen::Rtc, "ОШИБКА ДАННЫХ");
-    if (log) Serial.println("RTC: invalid registers; check model, time and address collision");
-    return;
-  }
-  screen::set(screen::Rtc, "%04d-%02d-%02d %02d:%02d:%02d%s",
-              2000 + year + ((r[5] & 0x80) ? 100 : 0), month, day, hour, minute, second,
-              (status & 0x80) ? " !" : "");
-  if (log) Serial.printf("RTC (assuming DS3231): %04d-%02d-%02d %02d:%02d:%02d; OSF=%u%s\n",
-                2000 + year + ((r[5] & 0x80) ? 100 : 0), month, day, hour, minute, second,
-                (status >> 7) & 1, (status & 0x80) ? " TIME NOT TRUSTED: oscillator stopped" : "");
+  const auto local = deviceClock.local(millis());
+  screen::set(screen::Rtc, "%04d-%02d-%02d %02d:%02d:%02d%s", local.year, local.month, local.day,
+              local.hour, local.minute, local.second, deviceClock.trusted(millis()) ? "" : " !");
+  if (log) Serial.printf("RTC local: %04d-%02d-%02d %02d:%02d:%02d, UTC offset=%dmin trusted=%d\n",
+    local.year, local.month, local.day, local.hour, local.minute, local.second,
+    deviceClock.zoneMinutes, deviceClock.trusted(millis()));
 }
-
 void stopSound() {
   playingFrequency = 0;
   audioMode = vario::Sound::Silent;
@@ -476,20 +451,22 @@ void help() {
   Serial.println("m=toggle vario sound, x=mute, z=zero relative altitude, v=vario/compass/diagnostics");
   Serial.println("q1013.25 + Enter = QNH hPa (800..1100); a10 + Enter = averaging seconds (1..30)");
   Serial.println("s=scan, d=detect sensors, r=RTC, p=toggle Serial telemetry, t=redraw, h=help");
-  Serial.println("g=display geometry/next rotation; t=return. Menu: Buzzer test, OK/BACK stops.");
+  Serial.println("g=display geometry/next rotation; t=return. Menu: clock/timezone, flight recorder, journal, battery cells.");
   Serial.println("b=short buzzer test (mutes vario); scan/detect/test reset the filter.");
   Serial.println("Climb sound: >=+0.2m/s (off <=+0.1); sink <=-2; alarm <=-10.");
   Serial.println("Compass: uncalibrated XY heading, keep sensor level; no tilt compensation.");
-  Serial.println("Altitude depends on QNH. No flight detection/log yet. RTC is not overwritten.");
+  Serial.println("Flight recorder: start/stop in menu; CSV in internal LittleFS; no horizontal speed/GPS.");
+  Serial.println("RTC is stored as UTC after explicit on-device clock setup. Timezone does not alter flight durations.");
 }
 
 void drawCurrent(bool force = false) {
   if (geometryRotation >= 0) return;
   if (menu.mode != buttons::Mode::Closed)
-    screen::drawMenu(menu, flight.qnh, flight.averageSeconds, audioEnabled, menuNotice, soundStep >= 0, force);
+    screen::drawMenu(menu, flight.qnh, flight.averageSeconds, audioEnabled, menuNotice, soundStep >= 0,
+                     journal, journalIndex, deviceClock, batteryState, force);
   else if (currentPage == 1) screen::drawCompass(magneticHeading, millis(), force);
   else if (currentPage == 2) screen::draw(force);
-  else screen::drawVario(flight, millis(), audioEnabled, force);
+  else screen::drawVario(flight, millis(), audioEnabled, journal, force);
   screen::drawBattery(batteryState);
 }
 
@@ -509,6 +486,8 @@ void updateBarometer(uint32_t now) {
   if (!isfinite(currentTemperature)) currentPressure = NAN;
   if (!flight.update(currentPressure, millis())) screen::set(screen::Baro, "НЕТ ДАННЫХ");
   else screen::set(screen::Baro, "%.2fгПа %.1fC", currentPressure / 100, currentTemperature);
+  journal.sample(millis(), flight.ready(millis()) ? flight.height : NAN,
+                 flight.ready(millis()) ? flight.velocity : NAN, currentPressure, batteryState.voltage);
 }
 
 void varioSoundTick(uint32_t now) {
@@ -535,6 +514,7 @@ void settingCommand(char *command) {
     Serial.println("Invalid number; examples: q1013.25 or a10 followed by Enter"); return;
   }
   if (command[0] == 'q') {
+    if (journal.active()) { Serial.println("Finish the flight before changing QNH"); return; }
     if (!flight.setQnh(value)) { Serial.println("QNH must be 800..1100 hPa"); return; }
     menu.close();
     stopSound();
@@ -618,6 +598,7 @@ void buttonsTick() {
         Serial.println(audioEnabled ? "Button: sound ON" : "Button: muted");
         break;
       case buttons::Action::SaveQnh: {
+        if (journal.active()) { strcpy(menuNotice,"СНАЧАЛА ЗАВЕРШИТЕ ПОЛЁТ"); break; }
         if (!flight.setQnh(menu.draft)) { strcpy(menuNotice, "ОШИБКА QNH"); break; }
         stopSound();
         const bool saved = settingsReady && settings.putFloat("qnh", flight.qnh) == sizeof(float);
@@ -636,6 +617,61 @@ void buttonsTick() {
         strcpy(menuNotice, flight.zero(millis()) ? "ОТНОСИТ. ВЫСОТА ОБНУЛЕНА." : "НЕТ ДАВЛЕНИЯ. НОЛЬ НЕ ИЗМЕНЁН.");
         Serial.println(menuNotice);
         break;
+      case buttons::Action::OpenClock:
+        menu.date = deviceClock.available(millis()) ? deviceClock.local(millis()) : calendar::DateTime{};
+        break;
+      case buttons::Action::SaveClock: {
+        if (journal.active()) { strcpy(menuNotice,"СНАЧАЛА ЗАВЕРШИТЕ ПОЛЁТ"); break; }
+        if (!settingsReady || settings.putBool("rtcPending",true) != 1) {
+          strcpy(menuNotice,"НЕТ ДОСТУПА К НАСТРОЙКАМ"); break;
+        }
+        deviceClock.formatCertain = false;
+        if (!deviceClock.setLocal(menu.date)) {
+          strcpy(menuNotice,"ОШИБКА ЗАПИСИ ЧАСОВ"); break;
+        }
+        if (settings.putBool("rtcUTC",true) != 1 || settings.putBool("rtcPending",false) != 1) {
+          strcpy(menuNotice,"ВРЕМЯ НЕ СОХРАНЕНО. ПОВТОРИТЕ"); break;
+        }
+        deviceClock.formatCertain = true; menu.mode = buttons::Mode::List;
+        printRtc(false); strcpy(menuNotice,"ДАТА И ВРЕМЯ СОХРАНЕНЫ");
+        break;
+      }
+      case buttons::Action::OpenTimezone: menu.draft = deviceClock.zoneMinutes; break;
+      case buttons::Action::SaveTimezone: {
+        const int zone = int(menu.draft);
+        if (!calendar::validZone(zone) || !settingsReady || settings.putInt("tzMin",zone) != sizeof(int)) {
+          strcpy(menuNotice,"ОШИБКА СОХРАНЕНИЯ ПОЯСА"); break;
+        }
+        deviceClock.zoneMinutes = zone; menu.mode = buttons::Mode::List;
+        printRtc(false); strcpy(menuNotice,"ЧАСОВОЙ ПОЯС СОХРАНЁН"); break;
+      }
+      case buttons::Action::OpenJournal: journalIndex = 0; break;
+      case buttons::Action::JournalNext:
+        if (journalIndex + 1 < journal.count()) ++journalIndex;
+        break;
+      case buttons::Action::JournalPrevious:
+        if (journalIndex > 0) --journalIndex;
+        break;
+      case buttons::Action::ToggleFlight:
+        if (journal.active()) {
+          const bool ok = journal.stop(millis());
+          strcpy(menuNotice,ok?"ПОЛЁТ СОХРАНЁН":"ОШИБКА ЗАВЕРШЕНИЯ ЗАПИСИ");
+          menu.mode = buttons::Mode::List;
+        } else if (!flight.ready(millis())) strcpy(menuNotice,"ДОЖДИТЕСЬ ДАННЫХ БАРОМЕТРА");
+        else if (journal.start(millis(),deviceClock.utc(millis()),deviceClock.trusted(millis()),
+                              deviceClock.zoneMinutes,flight.qnh,flight.height)) {
+          strcpy(menuNotice,"ЗАПИСЬ ПОЛЁТА НАЧАТА"); menu.mode = buttons::Mode::List;
+        } else snprintf(menuNotice,sizeof(menuNotice),"%s",journal.error());
+        break;
+      case buttons::Action::OpenBatteryCells: menu.draft = batteryCells ? batteryCells : 1; break;
+      case buttons::Action::SaveBatteryCells: {
+        const int cells = int(menu.draft);
+        if (cells < 1 || cells > 6 || !settingsReady || settings.putInt("cells",cells) != sizeof(int)) {
+          strcpy(menuNotice,"ОШИБКА СОХРАНЕНИЯ БАТАРЕИ"); break;
+        }
+        batteryCells = cells; menu.mode = buttons::Mode::List;
+        batteryTick(millis(),true); strcpy(menuNotice,"ЧИСЛО ЯЧЕЕК СОХРАНЕНО"); break;
+      }
       default: break;
     }
   }
@@ -651,6 +687,12 @@ void setup() {
   if (settingsReady) {
     flight.setQnh(settings.getFloat("qnh", 1013.25f));
     flight.setAverage(settings.getFloat("avg", 10.0f));
+    const int zone = settings.getInt("tzMin",180);
+    deviceClock.zoneMinutes = calendar::validZone(zone) ? zone : 180;
+    deviceClock.storedUtc = settings.getBool("rtcUTC",false);
+    deviceClock.formatCertain = !settings.getBool("rtcPending",false);
+    batteryCells = settings.getInt("cells",0);
+    if (batteryCells < 0 || batteryCells > 6) batteryCells = 0;
   }
   Serial.println("\nVARIOMETER hardware diagnostics / ESP32");
   Serial.println("Firmware build: " __DATE__ " " __TIME__);
@@ -668,6 +710,7 @@ void setup() {
   detectMagnetometer();
   printRtc();
   help();
+  journal.begin();
   buttonsBegin();
   drawCurrent(true);
 }
@@ -677,6 +720,7 @@ void loop() {
   serialTick();
   updateBarometer(millis());
   batteryTick(millis());
+  journal.tick(millis());
   compassTick(millis());
   soundTick();
   varioSoundTick(millis());

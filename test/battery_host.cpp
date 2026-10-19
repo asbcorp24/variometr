@@ -15,5 +15,11 @@ int main() {
   assert(s.update(0x0012, 51200, 25600, UINT32_MAX - 100));
   s.expire(200); assert(s.mode == battery::Mode::Measured);
   s.expire(4000); assert(s.mode == battery::Mode::Error);
-  std::puts("PASS: demo, identification, voltage/SOC conversion, disconnect, bounds, recovery, stale data");
+  assert(s.updateIna(4.0f,NAN,0,0));assert(s.mode==battery::Mode::VoltageOnly&&std::isnan(s.percent));
+  assert(s.updateIna(8.0f,0.5f,2,100));assert(s.estimated&&s.percent==85&&s.currentAmps==0.5f);
+  assert(!s.updateIna(8.0f,0.5f,1,200));assert(s.mode==battery::Mode::Error);
+  assert(s.updateIna(6.0f,-0.5f,2,300));assert(s.percent==0);
+  assert(s.updateIna(8.4f,0,2,400));assert(s.percent==100);
+  s.expire(3401);assert(s.mode==battery::Mode::Error);
+  std::puts("PASS: battery legacy gauge, INA228 voltage-only/estimated SOC, cells, current, errors and stale data");
 }
