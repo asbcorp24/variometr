@@ -4,3 +4,5 @@ constexpr unsigned char INA228_ADDRESS = 0x40;
 // R015 (15 milliohms), as marked on the module image supplied by the user.
 // Set this to zero to disable current readings if a different shunt is fitted.
 constexpr float INA228_SHUNT_OHMS = 0.015f;
+// User-specified nominal capacity; voltage-based SOC does not integrate mAh yet.
+constexpr unsigned BATTERY_CAPACITY_MAH = 10000;

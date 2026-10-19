@@ -1,6 +1,7 @@
 #include "diagnostic_display.h"
 #include "russian_gfx.h"
 #include "display_panel.h"
+#include "hardware_config.h"
 #include <Arduino.h>
 #include <Adafruit_ILI9341.h>
 #include <stdarg.h>
@@ -216,6 +217,8 @@ void drawMenu(const buttons::Menu &menu,double qnh,double average,bool sound,con
       else if(std::isfinite(battery.currentAmps))snprintf(value,sizeof(value),"%.2f В  %.3f А",battery.voltage,battery.currentAmps);
       else snprintf(value,sizeof(value),"%.2f В / ТОК НЕ ЗАДАН",battery.voltage);
       text(8,top+158,1,ILI9341_WHITE,value);
+      snprintf(value,sizeof(value),"ЁМКОСТЬ: %u мАч",BATTERY_CAPACITY_MAH);
+      text(8,top+180,1,ILI9341_WHITE,value);
     }
   }
   if(notice&&notice[0])text(8,tft.height()-33,1,ILI9341_YELLOW,notice);
