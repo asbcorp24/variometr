@@ -27,11 +27,22 @@ int main(){
   PowerMonitor power;battery::State state;power.read(state,0);
   assert(state.mode==battery::Mode::VoltageOnly&&state.voltage==8.0f&&std::isnan(state.percent));
   assert(Wire.writes==0);power.read(state,2);assert(state.percent==85&&state.estimated);
+  // +1.5 mV across R015 = +100 mA, normal +/-163.84 mV ADC range.
+  Wire.regs[4][0]=0x01;Wire.regs[4][1]=0x2c;Wire.regs[4][2]=0x00;
+  power.read(state,2);assert(std::fabs(state.currentAmps-0.1f)<0.000001f);
+  // Same magnitude, negative two's-complement 20-bit shunt voltage.
+  Wire.regs[4][0]=0xfe;Wire.regs[4][1]=0xd4;
+  power.read(state,2);assert(std::fabs(state.currentAmps+0.1f)<0.000001f);
+  // ADC range bit changes shunt LSB by four, but not the bus voltage scale.
+  Wire.regs[0][1]=0x10;Wire.regs[4][0]=0x01;Wire.regs[4][1]=0x2c;
+  power.read(state,2);assert(std::fabs(state.currentAmps-0.025f)<0.000001f&&state.voltage==8.0f);
+  Wire.regs[0][1]=0;Wire.regs[4][0]=Wire.regs[4][1]=Wire.regs[4][2]=0;
+  power.read(state,2);assert(state.currentAmps==0&&Wire.writes==0);
   Wire.present[0x40]=false;power.read(state,2);assert(state.mode==battery::Mode::Error);
   Wire.present[0x40]=true;Wire.regs[0x3f][0]=0;power.read(state,2);assert(state.mode==battery::Mode::Error&&Wire.writes==0);
   Wire.regs[0x3f][0]=0x22;Wire.regs[1][0]=0;
   power.read(state,2);assert(state.mode==battery::Mode::Error&&Wire.regs[1][0]==0xf0&&Wire.writes==1);
   power.read(state,2);assert(state.mode==battery::Mode::Measured);
   Wire.failRead=true;power.read(state,2);assert(state.mode==battery::Mode::Error);
-  std::puts("PASS: RTC read/write verification, UTC/timezones, OSF preservation, write failures; INA228 identity, voltage, no false 100%, disconnect/recovery");
+  std::puts("PASS: RTC/UTC; INA228 identity, voltage, R015 signed current, both ADC ranges, zero current, disconnect/recovery");
 }
