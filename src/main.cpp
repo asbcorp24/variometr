@@ -9,6 +9,7 @@
 #include "rtc_clock.h"
 #include "flight_journal.h"
 #include "power_monitor.h"
+#include "hardware_config.h"
 
 constexpr uint8_t SDA_PIN = 21, SCL_PIN = 22, BUZZER_PIN = 14;
 constexpr bool SOUND_ENABLED_ON_BOOT = true;
@@ -52,7 +53,7 @@ uint32_t batteryTime = 0;
 DeviceClock deviceClock;
 FlightJournal journal;
 PowerMonitor powerMonitor;
-int batteryCells = 0; // Confirm cell count in the on-device menu before estimating percent.
+int batteryCells = BATTERY_DEFAULT_CELLS;
 size_t journalIndex = 0;
 
 bool readBytes(uint8_t address, uint8_t reg, uint8_t *data, size_t count, TwoWire &bus = Wire) {
@@ -691,8 +692,8 @@ void setup() {
     deviceClock.zoneMinutes = calendar::validZone(zone) ? zone : 180;
     deviceClock.storedUtc = settings.getBool("rtcUTC",false);
     deviceClock.formatCertain = !settings.getBool("rtcPending",false);
-    batteryCells = settings.getInt("cells",0);
-    if (batteryCells < 0 || batteryCells > 6) batteryCells = 0;
+    batteryCells = settings.getInt("cells",BATTERY_DEFAULT_CELLS);
+    if (batteryCells < 1 || batteryCells > 6) batteryCells = BATTERY_DEFAULT_CELLS;
   }
   Serial.println("\nVARIOMETER hardware diagnostics / ESP32");
   Serial.println("Firmware build: " __DATE__ " " __TIME__);

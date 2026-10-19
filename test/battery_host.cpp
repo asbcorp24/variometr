@@ -21,5 +21,9 @@ int main() {
   assert(s.updateIna(6.0f,-0.5f,2,300));assert(s.percent==0);
   assert(s.updateIna(8.4f,0,2,400));assert(s.percent==100);
   s.expire(3401);assert(s.mode==battery::Mode::Error);
+  assert(s.updateIna(3.0f,0.2f,1,4000));assert(s.percent==0);
+  assert(s.updateIna(3.7f,0.2f,1,4100));assert(std::fabs(s.percent-40)<0.01f);
+  assert(s.updateIna(4.2f,0.0f,1,4200));assert(std::fabs(s.percent-100)<0.01f);
+  assert(s.updateIna(3.9f,0.2f,1,4300));assert(std::fabs(s.percent-75)<0.01f);
   std::puts("PASS: battery legacy gauge, INA228 voltage-only/estimated SOC, cells, current, errors and stale data");
 }

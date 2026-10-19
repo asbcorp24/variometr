@@ -6,3 +6,5 @@ constexpr unsigned char INA228_ADDRESS = 0x40;
 constexpr float INA228_SHUNT_OHMS = 0.015f;
 // User-specified nominal capacity; voltage-based SOC does not integrate mAh yet.
 constexpr unsigned BATTERY_CAPACITY_MAH = 10000;
+// User confirmed 3.7 V nominal: one Li-ion cell in series (4.2 V fully charged).
+constexpr int BATTERY_DEFAULT_CELLS = 1;
