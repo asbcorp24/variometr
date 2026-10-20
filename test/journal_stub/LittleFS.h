@@ -1,7 +1,7 @@
 #pragma once
 #include "FS.h"
 struct LittleFSClass {
-  bool begin(bool){return memoryStore.mounted;}
+  bool begin(bool,const char *,unsigned,const char *label){return std::string(label)=="flight_ext" && memoryStore.mounted;}
   bool format(){++memoryStore.formats;memoryStore.nodes.clear();memoryStore.mounted=true;return true;}
   size_t totalBytes()const{return memoryStore.capacity;}
   size_t usedBytes()const{return memoryStore.used();}

@@ -7,7 +7,11 @@ MemoryStore memoryStore;
 LittleFSClass LittleFS;
 JournalSerial Serial;
 bool partitionErased=false;
+size_t partitionDirtyOffset=SIZE_MAX,highestPartitionRead=0;
+namespace logflash { bool connected = true; }
 int main(){
+  logflash::connected=false;FlightJournal absent;assert(!absent.begin()&&memoryStore.formats==0);
+  logflash::connected=true;
   FlightJournal j;assert(j.begin());
   assert(j.start(0,1700000000,true,180,1013.25,100));
   for(uint32_t t=100;t<=6300;t+=100)j.sample(t,100+t*0.001,1,100000,4);
@@ -50,6 +54,9 @@ int main(){
   assert(!full.active()&&full.current().end==flightlog::End::StorageFull);
   memoryStore=MemoryStore{};memoryStore.mounted=false;
   FlightJournal damaged;assert(!damaged.begin()&&memoryStore.formats==0); // Never erase existing/unrecognized storage.
-  partitionErased=true;FlightJournal fresh;assert(fresh.begin()&&memoryStore.formats==1);
-  std::puts("PASS: actual journal file I/O, reboot recovery, power loss, numbering, capacity, write failure, full storage, non-destructive mount, confirmed clear, partial remove failure, unrelated files preserved");
+  partitionErased=true;partitionDirtyOffset=16u*1024u*1024u+123;
+  FlightJournal dirtyHigh;assert(!dirtyHigh.begin()&&memoryStore.formats==0);
+  assert(highestPartitionRead>16u*1024u*1024u); // Upper half must be checked before auto-format.
+  partitionDirtyOffset=SIZE_MAX;FlightJournal fresh;assert(fresh.begin()&&memoryStore.formats==1);
+  std::puts("PASS: actual journal file I/O, reboot recovery, power loss, numbering, capacity, write failure, full storage, non-destructive mount, confirmed clear, partial remove failure, unrelated files preserved, nonblank upper 16 MiB protected");
 }

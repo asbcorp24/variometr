@@ -1,5 +1,6 @@
 #include "flight_journal.h"
 #include "journal_codec.h"
+#include "external_log_flash.h"
 #include <LittleFS.h>
 #include <esp_partition.h>
 #include <Arduino.h>
@@ -19,9 +20,9 @@ bool journalName(const char *path, unsigned &id) {
   return true;
 }
 bool erasedPartition() {
-  const auto *p = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS, nullptr);
+  const auto *p = logflash::partition();
   if (!p) return false;
-  uint8_t block[512];
+  uint8_t block[4096];
   for (size_t offset = 0; offset < p->size; offset += sizeof(block)) {
     const size_t size = std::min(sizeof(block), p->size - offset);
     if (esp_partition_read(p, offset, block, size) != ESP_OK) return false;
@@ -60,8 +61,12 @@ bool FlightJournal::begin() {
   count_ = 0; nextId_ = 1; error_[0] = 0;
   session_ = flightlog::Session{};
   // Never auto-format a partition that contains data.
-  ready_ = LittleFS.begin(false);
-  if (!ready_ && erasedPartition()) ready_ = LittleFS.format() && LittleFS.begin(false);
+  if (!logflash::begin()) { ready_ = false; fault("НЕТ ВНЕШНЕЙ FLASH"); return false; }
+  ready_ = LittleFS.begin(false, "/flightlogs", 10, logflash::Label);
+  if (!ready_) {
+    Serial.printf("External log flash: mount failed; checking entire chip for erased bytes before format\n");
+    if (erasedPartition()) ready_ = LittleFS.format() && LittleFS.begin(false, "/flightlogs", 10, logflash::Label);
+  }
   if (!ready_) { fault("НЕ УДАЛОСЬ ОТКРЫТЬ ПАМЯТЬ"); return false; }
   File root = LittleFS.open("/");
   if (!root) { ready_ = false; fault("ОШИБКА КАТАЛОГА"); return false; }

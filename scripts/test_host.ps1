@@ -16,7 +16,7 @@ try {
   New-Item -ItemType Directory -Path .pio -Force | Out-Null
   function Invoke-HostTest([string]$Name, [string[]]$Sources, [string[]]$Extra = @()) {
     $taskOutput = ".pio/${Name}_host.exe"
-    & $Compiler '-std=c++14' '-Wall' '-Wextra' '-I' 'include' @Extra @Sources '-o' $taskOutput
+    & $Compiler '-std=c++14' '-Wall' '-Wextra' @Extra '-I' 'include' @Sources '-o' $taskOutput
     if ($LASTEXITCODE -ne 0) { throw "Compilation failed: $Name" }
     & "./$taskOutput"
     if ($LASTEXITCODE -ne 0) { throw "Test failed: $Name" }
@@ -26,6 +26,13 @@ try {
   }
   Invoke-HostTest 'devices' @('test/devices_host.cpp','src/rtc_clock.cpp','src/power_monitor.cpp') @('-I','test/device_stub')
   Invoke-HostTest 'journal_storage' @('test/journal_storage_host.cpp','src/flight_journal.cpp') @('-I','test/journal_stub')
+  $taskFlashOutput = '.pio/external_flash_host.exe'
+  & $Compiler '-std=c++14' '-Wall' '-Wextra' '-I' 'test/external_stub' '-I' 'include' 'test/external_flash_host.cpp' 'src/external_log_flash.cpp' '-o' $taskFlashOutput
+  if ($LASTEXITCODE -ne 0) { throw 'Compilation failed: external_flash' }
+  foreach ($taskChip in @('macronix','winbond')) {
+    & "./$taskFlashOutput" $taskChip
+    if ($LASTEXITCODE -ne 0) { throw "Test failed: external_flash $taskChip" }
+  }
   $taskLib = ".pio/libdeps/$Environment"
   if (-not (Test-Path "$taskLib/Bounce2/src/Bounce2.cpp")) {
     throw "Install dependencies first: pio pkg install -e $Environment"
