@@ -6,6 +6,7 @@ struct LittleFSClass {
   size_t totalBytes()const{return memoryStore.capacity;}
   size_t usedBytes()const{return memoryStore.used();}
   bool exists(const char *path)const{return memoryStore.nodes.count(path);}
+  bool remove(const char *path){return memoryStore.failRemovePath!=path && memoryStore.nodes.erase(path)>0;}
   File open(const char *path,const char *mode="r"){
     if(std::string(path)=="/")return File::root();
     if(std::string(mode)=="w"){

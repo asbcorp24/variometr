@@ -28,11 +28,28 @@ int main(){
   FlightJournal many;assert(many.begin());
   for(unsigned i=0;i<64;++i){assert(many.start(i*1000,0,false,0,1013,0));assert(many.stop(i*1000+500));}
   assert(many.count()==64&&!many.start(100000,0,false,0,1013,0));
+  // Never delete while recording, and preserve unrelated files/settings.
+  memoryStore=MemoryStore{};FlightJournal clearing;assert(clearing.begin());
+  assert(clearing.start(0,0,false,0,1013,0));
+  assert(!clearing.clear()&&clearing.active()&&clearing.count()==1&&memoryStore.nodes.size()==1);
+  assert(clearing.stop(500));
+  assert(clearing.start(1000,0,false,0,1013,0));assert(clearing.stop(1500));
+  for(const char *path:{"/settings.json","/f1.csv","/f00000003.csv"}) {auto f=LittleFS.open(path,"w");f.close();}
+  memoryStore.failRemovePath="/f00000002.csv";
+  assert(!clearing.clear());assert(clearing.count()==1&&clearing.record(0).id==2);
+  assert(!LittleFS.exists("/f00000001.csv")&&LittleFS.exists("/f00000002.csv"));
+  memoryStore.failRemovePath.clear();
+  assert(clearing.clear()&&clearing.count()==0&&clearing.error()[0]==0);
+  assert(LittleFS.exists("/settings.json")&&LittleFS.exists("/f1.csv"));
+  assert(!LittleFS.exists("/f00000003.csv")&&memoryStore.formats==0);
+  FlightJournal afterClear;assert(afterClear.begin()&&afterClear.count()==0);
+  assert(afterClear.clear());assert(afterClear.start(2000,0,false,0,1013,0)&&afterClear.current().id==1);
+  assert(afterClear.stop(2500));
   memoryStore=MemoryStore{};FlightJournal full;assert(full.begin());assert(full.start(0,0,false,0,1013,0));
   memoryStore.capacity=memoryStore.used()+12000;full.sample(1000,0,0,100000,4);
   assert(!full.active()&&full.current().end==flightlog::End::StorageFull);
   memoryStore=MemoryStore{};memoryStore.mounted=false;
   FlightJournal damaged;assert(!damaged.begin()&&memoryStore.formats==0); // Never erase existing/unrecognized storage.
   partitionErased=true;FlightJournal fresh;assert(fresh.begin()&&memoryStore.formats==1);
-  std::puts("PASS: actual journal file I/O, reboot recovery, power loss, numbering, capacity, write failure, full storage, non-destructive mount");
+  std::puts("PASS: actual journal file I/O, reboot recovery, power loss, numbering, capacity, write failure, full storage, non-destructive mount, confirmed clear, partial remove failure, unrelated files preserved");
 }

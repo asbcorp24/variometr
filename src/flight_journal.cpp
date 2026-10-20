@@ -10,6 +10,14 @@
 #include <cstdlib>
 
 namespace {
+bool journalName(const char *path, unsigned &id) {
+  const char *name = strrchr(path, '/');
+  name = name ? name + 1 : path;
+  if (strlen(name) != 13 || name[0] != 'f' || strcmp(name + 9, ".csv") != 0) return false;
+  for (int i = 1; i <= 8; ++i) if (name[i] < '0' || name[i] > '9') return false;
+  id = strtoul(name + 1, nullptr, 10);
+  return true;
+}
 bool erasedPartition() {
   const auto *p = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS, nullptr);
   if (!p) return false;
@@ -48,6 +56,9 @@ size_t FlightJournal::freeBytes() const {
   return ready_ ? LittleFS.totalBytes() - LittleFS.usedBytes() : 0;
 }
 bool FlightJournal::begin() {
+  if (active()) return false;
+  count_ = 0; nextId_ = 1; error_[0] = 0;
+  session_ = flightlog::Session{};
   // Never auto-format a partition that contains data.
   ready_ = LittleFS.begin(false);
   if (!ready_ && erasedPartition()) ready_ = LittleFS.format() && LittleFS.begin(false);
@@ -57,12 +68,8 @@ bool FlightJournal::begin() {
   while (true) {
     File file = root.openNextFile();
     if (!file) break;
-    const char *name = strrchr(file.name(), '/');
-    name = name ? name + 1 : file.name();
     unsigned id = 0;
-    int consumed = 0;
-    const bool matches = sscanf(name, "f%8u.csv%n", &id, &consumed) == 1 &&
-                         consumed > 0 && name[consumed] == 0;
+    const bool matches = journalName(file.name(), id);
     if (matches) {
       nextId_ = std::max(nextId_, uint32_t(id + 1));
       flightlog::Record record;
@@ -74,6 +81,35 @@ bool FlightJournal::begin() {
   std::sort(records_, records_ + count_, [](const flightlog::Record &a, const flightlog::Record &b) { return a.id < b.id; });
   ++revision_;
   return true;
+}
+bool FlightJournal::clear() {
+  if (active()) { fault("СНАЧАЛА ЗАВЕРШИТЕ ПОЛЁТ"); return false; }
+  if (!ready_) { fault("ПАМЯТЬ НЕДОСТУПНА"); return false; }
+  bool ok = true;
+  // Close the directory before removing a file; reopen it after every deletion.
+  // This also removes damaged journal files that could not be loaded into records_.
+  while (true) {
+    File root = LittleFS.open("/");
+    if (!root) { ok = false; break; }
+    char path[16] = {};
+    while (true) {
+      File entry = root.openNextFile();
+      if (!entry) break;
+      unsigned id = 0;
+      const bool match = journalName(entry.name(), id);
+      if (match) snprintf(path, sizeof(path), "/f%08u.csv", id);
+      entry.close();
+      if (match) break;
+    }
+    root.close();
+    if (!path[0]) break;
+    if (!LittleFS.remove(path)) { ok = false; break; }
+    yield();
+  }
+  // Reload surviving records even after a partial deletion or a remove error.
+  const bool loaded = begin();
+  if (!ok) fault("НЕ ВСЕ ЛОГИ УДАЛЕНЫ");
+  return ok && loaded;
 }
 bool FlightJournal::load(File &file, flightlog::Record &r) {
   flightlog::Recovery recovery;

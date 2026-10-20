@@ -15,6 +15,7 @@ struct MemoryStore {
   std::map<std::string,std::shared_ptr<MemoryNode>> nodes;
   size_t capacity=512*1024;
   bool mounted=true,failWrites=false;
+  std::string failRemovePath;
   unsigned formats=0;
   size_t used()const{size_t n=0;for(const auto &kv:nodes)n+=kv.second->data.size();return n;}
   void crash(){for(auto &kv:nodes)kv.second->data=kv.second->durable;}

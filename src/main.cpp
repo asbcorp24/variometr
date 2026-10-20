@@ -667,6 +667,12 @@ void buttonsTick() {
           strcpy(menuNotice,"ЗАПИСЬ ПОЛЁТА НАЧАТА"); menu.finishFlightDialog(); journalIndex = 0;
         } else snprintf(menuNotice,sizeof(menuNotice),"%s",journal.error());
         break;
+      case buttons::Action::ClearLogs: {
+        const bool ok = journal.clear();
+        journalIndex = 0;
+        snprintf(menuNotice,sizeof(menuNotice),"%s",ok?"ЖУРНАЛ ОЧИЩЕН":journal.error());
+        break;
+      }
       case buttons::Action::OpenBatteryCells: menu.draft = batteryCells ? batteryCells : 1; break;
       case buttons::Action::SaveBatteryCells: {
         const int cells = int(menu.draft);

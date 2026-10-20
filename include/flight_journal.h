@@ -6,6 +6,7 @@ class FlightJournal {
  public:
   static constexpr size_t Capacity = 64;
   bool begin();
+  bool clear();
   bool start(uint32_t now, int64_t utc, bool trusted, int zone, float qnh, float altitude);
   bool stop(uint32_t now, flightlog::End reason = flightlog::End::Manual);
   void sample(uint32_t now, float altitude, float velocity, float pressure, float batteryVoltage);

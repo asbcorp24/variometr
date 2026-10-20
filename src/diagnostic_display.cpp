@@ -190,7 +190,7 @@ void drawMenu(const buttons::Menu &menu,double qnh,double average,bool sound,con
     strcpy(rows[3],"ОБНУЛИТЬ ВЫСОТУ"); strcpy(rows[4],"ТЕСТ ПИЩАЛКИ");
     strcpy(rows[5],"ДАТА И ВРЕМЯ");strcpy(rows[6],"ЧАСОВОЙ ПОЯС");
     strcpy(rows[7],journal.active()?"ЗАВЕРШИТЬ ПОЛЁТ":"НАЧАТЬ ПОЛЁТ");strcpy(rows[8],"ЖУРНАЛ ПОЛЁТОВ");
-    strcpy(rows[9],"АККУМУЛЯТОР");strcpy(rows[10],"НАЗАД");
+    strcpy(rows[9],"АККУМУЛЯТОР");strcpy(rows[10],"ОЧИСТИТЬ ЛОГИ");strcpy(rows[11],"НАЗАД");
     const int visible=big?9:6, first=(menu.selected/visible)*visible;
     for(int i=first;i<buttons::MenuCount&&i<first+visible;++i) {
       const int y=top+(i-first)*step;
@@ -213,10 +213,14 @@ void drawMenu(const buttons::Menu &menu,double qnh,double average,bool sound,con
     text(8,top+100,1,ILI9341_WHITE,"ВВЕРХ/ВНИЗ: ШАГ 15 МИНУТ");
     text(8,top+122,1,ILI9341_WHITE,"UTC -12:00 ... +14:00");
     text(8,top+144,1,ILI9341_WHITE,"ВРЕМЯ В ЖУРНАЛЕ ХРАНИТСЯ В UTC");
-  } else if(menu.mode==buttons::Mode::ConfirmZero||menu.mode==buttons::Mode::ConfirmFlight) {
-    const char *prompt=menu.mode==buttons::Mode::ConfirmZero?"ОБНУЛИТЬ ВЫСОТУ?":journal.active()?"ЗАВЕРШИТЬ ПОЛЁТ?":"НАЧАТЬ ПОЛЁТ?";
+  } else if(menu.mode==buttons::Mode::ConfirmZero||menu.mode==buttons::Mode::ConfirmFlight||menu.mode==buttons::Mode::ConfirmClearLogs) {
+    const char *prompt=menu.mode==buttons::Mode::ConfirmClearLogs?"ОЧИСТИТЬ ЖУРНАЛ?":menu.mode==buttons::Mode::ConfirmZero?"ОБНУЛИТЬ ВЫСОТУ?":journal.active()?"ЗАВЕРШИТЬ ПОЛЁТ?":"НАЧАТЬ ПОЛЁТ?";
     text(8,top,2,ILI9341_WHITE,prompt);
     if(menu.mode==buttons::Mode::ConfirmFlight&&!clock.trusted(millis()))text(8,top+40,1,ILI9341_YELLOW,"ДАТА НЕ ЗАДАНА: ЖУРНАЛ БЕЗ ДАТЫ");
+    if(menu.mode==buttons::Mode::ConfirmClearLogs) {
+      text(8,top+40,1,ILI9341_YELLOW,"ВСЕ ПОЛЁТЫ БУДУТ УДАЛЕНЫ");
+      text(8,top+58,1,ILI9341_YELLOW,"ВОССТАНОВЛЕНИЕ НЕВОЗМОЖНО");
+    }
     tft.fillRect(menu.confirm?tft.width()/2+4:4,top+88,tft.width()/2-8,32,ILI9341_DARKCYAN);
     text(20,top+96,2,ILI9341_WHITE,"НЕТ");text(tft.width()/2+20,top+96,2,ILI9341_WHITE,"ДА");
   } else if(menu.mode==buttons::Mode::BuzzerTest) {

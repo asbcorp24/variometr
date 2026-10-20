@@ -112,8 +112,8 @@ int main() {
   m.handle(Key::Ok,Event::Short,1013.25,10);assert(m.mode==Mode::List);
   m.handle(Key::Ok,Event::Short,1013.25,10);m.handle(Key::Up,Event::Short,1013.25,10);
   assert(m.handle(Key::Ok,Event::Short,1013.25,10)==Action::ToggleFlight);
-  m.mode=Mode::List;m.selected=10;m.handle(Key::Down,Event::Short,1013.25,10);assert(m.selected==0);
-  m.handle(Key::Up,Event::Short,1013.25,10);assert(m.selected==10);
+  m.mode=Mode::List;m.selected=11;m.handle(Key::Down,Event::Short,1013.25,10);assert(m.selected==0);
+  m.handle(Key::Up,Event::Short,1013.25,10);assert(m.selected==11);
   m.handle(Key::Ok, Event::Short, 1013.25, 10);
   assert(m.mode == Mode::Closed);
   assert(nextPage(0)==1&&nextPage(1)==2&&nextPage(2)==JournalPage&&nextPage(JournalPage)==0);
@@ -133,5 +133,15 @@ int main() {
   m.handle(Key::Ok,Event::Long,1013.25,10,true);assert(m.mode==Mode::List);
   m.selected=7;m.handle(Key::Ok,Event::Short,1013.25,10,true);
   m.finishFlightDialog();assert(m.mode==Mode::List);
-  std::puts("PASS: Bounce2, gestures, date/time editing, timezone bounds, flight confirmation, eleven-item navigation, separate journal page and recording controls");
+  m.mode=Mode::List;m.selected=10;
+  m.handle(Key::Ok,Event::Short,1013.25,10);assert(m.mode==Mode::ConfirmClearLogs&&!m.confirm);
+  assert(m.handle(Key::Ok,Event::Short,1013.25,10)==Action::None&&m.mode==Mode::List);
+  m.handle(Key::Ok,Event::Short,1013.25,10);
+  m.handle(Key::Up,Event::Long,1013.25,10);assert(!m.confirm);
+  m.handle(Key::Up,Event::Short,1013.25,10);assert(m.confirm);
+  m.handle(Key::Back,Event::Short,1013.25,10);assert(m.mode==Mode::List);
+  m.handle(Key::Ok,Event::Short,1013.25,10);assert(!m.confirm);
+  m.handle(Key::Down,Event::Short,1013.25,10);
+  assert(m.handle(Key::Ok,Event::Short,1013.25,10)==Action::ClearLogs&&m.mode==Mode::List);
+  std::puts("PASS: Bounce2, gestures, date/time editing, timezone bounds, flight confirmation, twelve-item navigation, clear-log confirmation, separate journal page and recording controls");
 }

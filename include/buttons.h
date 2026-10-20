@@ -33,11 +33,11 @@ class Gestures {
   uint32_t pressed = 0, repeated = 0;
 };
 
-enum class Mode { Closed, List, Qnh, Average, ConfirmZero, BuzzerTest, Clock, Timezone, ConfirmFlight, BatteryCells };
+enum class Mode { Closed, List, Qnh, Average, ConfirmZero, BuzzerTest, Clock, Timezone, ConfirmFlight, BatteryCells, ConfirmClearLogs };
 enum class Action { None, Page, ToggleSound, SaveQnh, SaveAverage, Zero, StartBuzzerTest, StopBuzzerTest,
   OpenClock, SaveClock, OpenTimezone, SaveTimezone, ToggleFlight, OpenJournal, JournalPrevious, JournalNext,
-  OpenBatteryCells, SaveBatteryCells };
-constexpr int MenuCount = 11;
+  OpenBatteryCells, SaveBatteryCells, ClearLogs };
+constexpr int MenuCount = 12;
 constexpr uint8_t JournalPage = 3;
 constexpr uint8_t PageCount = 4;
 inline uint8_t nextPage(uint8_t current) { return (current + 1) % PageCount; }
@@ -113,7 +113,7 @@ struct Menu {
         if (draft < 1) draft = 1;
         if (draft > 30) draft = 30;
       }
-      if ((mode == Mode::ConfirmZero || mode == Mode::ConfirmFlight) && event == Event::Short) confirm = !confirm;
+      if ((mode == Mode::ConfirmZero || mode == Mode::ConfirmFlight || mode == Mode::ConfirmClearLogs) && event == Event::Short) confirm = !confirm;
       return Action::None;
     }
     if (key != Key::Ok || event != Event::Short) return Action::None;
@@ -124,6 +124,10 @@ struct Menu {
     if (mode == Mode::ConfirmFlight) {
       if (confirm) return Action::ToggleFlight;
       finishFlightDialog(); return Action::None;
+    }
+    if (mode == Mode::ConfirmClearLogs) {
+      mode = Mode::List;
+      return confirm ? Action::ClearLogs : Action::None;
     }
     if (mode == Mode::ConfirmZero) {
       mode = Mode::List;
@@ -140,7 +144,8 @@ struct Menu {
       case 7: mode = Mode::ConfirmFlight; confirm = false; flightFromJournal = false; break;
       case 8: close(); return Action::OpenJournal;
       case 9: mode = Mode::BatteryCells; return Action::OpenBatteryCells;
-      case 10: close(); break;
+      case 10: mode = Mode::ConfirmClearLogs; confirm = false; break;
+      case 11: close(); break;
     }
     return Action::None;
   }
