@@ -116,5 +116,22 @@ int main() {
   m.handle(Key::Up,Event::Short,1013.25,10);assert(m.selected==10);
   m.handle(Key::Ok, Event::Short, 1013.25, 10);
   assert(m.mode == Mode::Closed);
-  std::puts("PASS: Bounce2, gestures, date/time editing, timezone bounds, flight confirmation, eleven-item navigation");
+  assert(nextPage(0)==1&&nextPage(1)==2&&nextPage(2)==JournalPage&&nextPage(JournalPage)==0);
+  m.mode=Mode::List;m.selected=8;
+  assert(m.handle(Key::Ok,Event::Short,1013.25,10)==Action::OpenJournal&&m.mode==Mode::Closed);
+  assert(m.handle(Key::Up,Event::Short,1013.25,10,true)==Action::JournalPrevious);
+  assert(m.handle(Key::Down,Event::Repeat,1013.25,10,true)==Action::JournalNext);
+  m.handle(Key::Ok,Event::Short,1013.25,10,true);
+  assert(m.mode==Mode::ConfirmFlight&&!m.confirm);
+  m.handle(Key::Ok,Event::Short,1013.25,10,true);assert(m.mode==Mode::Closed);
+  m.handle(Key::Ok,Event::Short,1013.25,10,true);
+  m.handle(Key::Back,Event::Short,1013.25,10,true);assert(m.mode==Mode::Closed);
+  m.handle(Key::Ok,Event::Short,1013.25,10,true);
+  m.handle(Key::Up,Event::Short,1013.25,10,true);
+  assert(m.handle(Key::Ok,Event::Short,1013.25,10,true)==Action::ToggleFlight);
+  m.finishFlightDialog();assert(m.mode==Mode::Closed);
+  m.handle(Key::Ok,Event::Long,1013.25,10,true);assert(m.mode==Mode::List);
+  m.selected=7;m.handle(Key::Ok,Event::Short,1013.25,10,true);
+  m.finishFlightDialog();assert(m.mode==Mode::List);
+  std::puts("PASS: Bounce2, gestures, date/time editing, timezone bounds, flight confirmation, eleven-item navigation, separate journal page and recording controls");
 }

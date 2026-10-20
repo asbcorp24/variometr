@@ -33,7 +33,7 @@ vario::Filter flight;
 Preferences settings;
 bool settingsReady = false;
 bool audioEnabled = SOUND_ENABLED_ON_BOOT;
-uint8_t currentPage = 0; // 0 variometer, 1 compass, 2 diagnostics.
+uint8_t currentPage = 0; // 0 variometer, 1 compass, 2 diagnostics, 3 flight journal.
 compass::Heading magneticHeading;
 uint32_t compassTime = 0;
 uint8_t baroAddress = 0;
@@ -449,7 +449,8 @@ void help() {
   Serial.println("UP/DOWN: select/change, hold repeats. Menu zero requires YES + OK.");
   Serial.printf("\nVARIOMETER: barometer 10 Hz, display 5 Hz, sound %s.\n",
                 audioEnabled ? "ON" : "MUTED");
-  Serial.println("m=toggle vario sound, x=mute, z=zero relative altitude, v=vario/compass/diagnostics");
+  Serial.println("m=toggle vario sound, x=mute, z=zero relative altitude, v=vario/compass/diagnostics/journal, j=journal");
+  Serial.println("Journal page: UP/DOWN=browse, OK=start/stop confirmation, hold OK=settings, BACK=next page.");
   Serial.println("q1013.25 + Enter = QNH hPa (800..1100); a10 + Enter = averaging seconds (1..30)");
   Serial.println("s=scan, d=detect sensors, r=RTC, p=toggle Serial telemetry, t=redraw, h=help");
   Serial.println("g=display geometry/next rotation; t=return. Menu: clock/timezone, flight recorder, journal, battery cells.");
@@ -467,6 +468,7 @@ void drawCurrent(bool force = false) {
                      journal, journalIndex, deviceClock, batteryState, force);
   else if (currentPage == 1) screen::drawCompass(magneticHeading, millis(), force);
   else if (currentPage == 2) screen::draw(force);
+  else if (currentPage == buttons::JournalPage) screen::drawJournal(journal, journalIndex, deviceClock, menuNotice, force);
   else screen::drawVario(flight, millis(), audioEnabled, journal, force);
   screen::drawBattery(batteryState);
 }
@@ -554,7 +556,8 @@ void serialTick() {
       case 'p': streaming = !streaming; Serial.println(streaming ? "Serial ON" : "Serial OFF"); break;
       case 'm': audioEnabled = !audioEnabled; stopSound(); Serial.println(audioEnabled ? "Sound ON" : "Muted"); break;
       case 'z': Serial.println(flight.zero(millis()) ? "Relative altitude zeroed" : "Wait for valid pressure"); break;
-      case 'v': menu.close(); currentPage = (currentPage + 1) % 3; drawCurrent(true); break;
+      case 'v': menu.close(); menuNotice[0] = 0; currentPage = buttons::nextPage(currentPage); drawCurrent(true); break;
+      case 'j': menu.close(); menuNotice[0] = 0; currentPage = buttons::JournalPage; journalIndex = 0; drawCurrent(true); break;
       case 'b': startSoundTest(); break;
       case 'x': audioEnabled = false; stopSound(); Serial.println("Muted"); break;
       case 'h': help(); break;
@@ -589,11 +592,11 @@ void buttonsTick() {
     }
     menuNotice[0] = 0;
     const auto action = menu.handle(static_cast<buttons::Key>(i), event,
-                                    flight.qnh, flight.averageSeconds);
+                                    flight.qnh, flight.averageSeconds, currentPage == buttons::JournalPage);
     switch (action) {
       case buttons::Action::StartBuzzerTest: startSoundTest(); break;
       case buttons::Action::StopBuzzerTest: stopSound(); break;
-      case buttons::Action::Page: currentPage = (currentPage + 1) % 3; break;
+      case buttons::Action::Page: currentPage = buttons::nextPage(currentPage); break;
       case buttons::Action::ToggleSound:
         audioEnabled = !audioEnabled; stopSound();
         Serial.println(audioEnabled ? "Button: sound ON" : "Button: muted");
@@ -646,7 +649,7 @@ void buttonsTick() {
         deviceClock.zoneMinutes = zone; menu.mode = buttons::Mode::List;
         printRtc(false); strcpy(menuNotice,"ЧАСОВОЙ ПОЯС СОХРАНЁН"); break;
       }
-      case buttons::Action::OpenJournal: journalIndex = 0; break;
+      case buttons::Action::OpenJournal: currentPage = buttons::JournalPage; journalIndex = 0; break;
       case buttons::Action::JournalNext:
         if (journalIndex + 1 < journal.count()) ++journalIndex;
         break;
@@ -657,11 +660,11 @@ void buttonsTick() {
         if (journal.active()) {
           const bool ok = journal.stop(millis());
           strcpy(menuNotice,ok?"ПОЛЁТ СОХРАНЁН":"ОШИБКА ЗАВЕРШЕНИЯ ЗАПИСИ");
-          menu.mode = buttons::Mode::List;
+          menu.finishFlightDialog(); journalIndex = 0;
         } else if (!flight.ready(millis())) strcpy(menuNotice,"ДОЖДИТЕСЬ ДАННЫХ БАРОМЕТРА");
         else if (journal.start(millis(),deviceClock.utc(millis()),deviceClock.trusted(millis()),
                               deviceClock.zoneMinutes,flight.qnh,flight.height)) {
-          strcpy(menuNotice,"ЗАПИСЬ ПОЛЁТА НАЧАТА"); menu.mode = buttons::Mode::List;
+          strcpy(menuNotice,"ЗАПИСЬ ПОЛЁТА НАЧАТА"); menu.finishFlightDialog(); journalIndex = 0;
         } else snprintf(menuNotice,sizeof(menuNotice),"%s",journal.error());
         break;
       case buttons::Action::OpenBatteryCells: menu.draft = batteryCells ? batteryCells : 1; break;

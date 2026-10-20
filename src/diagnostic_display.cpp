@@ -126,6 +126,49 @@ void drawVario(const vario::Filter &f,uint32_t now,bool sound,const FlightJourna
   const int size[9]={big?5:4,big?3:2,big?3:2,big?3:2,big?2:1,big?2:1,1,1,1};
   for(int i=0;i<9;++i) field(i,x[i],y[i],w[i],size[i]*8,size[i],i==0&&ready?(f.velocity>=0?ILI9341_GREEN:ILI9341_ORANGE):i==7&&journal.active()?ILI9341_RED:ILI9341_WHITE,s[i],force);
 }
+void drawJournal(const FlightJournal &journal,size_t index,const DeviceClock &clock,const char *notice,bool force) {
+  if(!started)return;
+  force=header(4,"ЖУРНАЛ",force);
+  const bool big=large();
+  const int top=big?56:37,dy=big?31:22,w=tft.width()-16;
+  char rows[13][160]={},time[32];
+  if(journal.active()) {
+    duration(time,sizeof(time),journal.current().durationMs);
+    snprintf(rows[0],sizeof(rows[0]),"ЗАПИСЬ #%lu  %s",static_cast<unsigned long>(journal.current().id),time);
+  } else strcpy(rows[0],"ЗАПИСЬ ОСТАНОВЛЕНА");
+  uint64_t total=0;unsigned complete=0;
+  for(size_t i=0;i<journal.count();++i){total+=journal.record(i).durationMs;if(journal.record(i).end==flightlog::End::Manual)++complete;}
+  snprintf(rows[1],sizeof(rows[1]),"ВСЕГО: %u  ЗАВЕРШЕНО: %u",unsigned(journal.count()),complete);
+  duration(time,sizeof(time),total);
+  snprintf(rows[2],sizeof(rows[2]),"ОБЩЕЕ ВРЕМЯ: %s",time);
+  if(!journal.ready())strcpy(rows[3],"ПАМЯТЬ НЕДОСТУПНА");
+  else if(!journal.count())strcpy(rows[3],"ПОЛЁТОВ ПОКА НЕТ");
+  else {
+    if(index>=journal.count())index=journal.count()-1;
+    const auto &r=journal.record(index);
+    snprintf(rows[3],sizeof(rows[3]),"ПОЛЁТ #%lu  %u/%u",static_cast<unsigned long>(r.id),unsigned(index+1),unsigned(journal.count()));
+    if(r.clockTrusted) {
+      const auto d=calendar::civil(r.startUtc+int64_t(clock.zoneMinutes)*60);
+      char zone[24];zoneText(zone,sizeof(zone),clock.zoneMinutes);
+      snprintf(rows[4],sizeof(rows[4]),"%04d-%02d-%02d %02d:%02d:%02d %s",d.year,d.month,d.day,d.hour,d.minute,d.second,zone);
+    } else strcpy(rows[4],"ДАТА НЕ ЗАДАНА");
+    duration(time,sizeof(time),r.durationMs);snprintf(rows[5],sizeof(rows[5]),"ДЛИТЕЛЬНОСТЬ %s",time);
+    snprintf(rows[6],sizeof(rows[6]),"МАКС. ВЫСОТА %.1f м",r.maxAltitude);
+    snprintf(rows[7],sizeof(rows[7]),"МАКС. НАБОР %.1f м",r.maxGain);
+    snprintf(rows[8],sizeof(rows[8]),"НАБОР %+.1f / СПУСК %+.1f м/с",r.maxClimb,r.minClimb);
+    snprintf(rows[9],sizeof(rows[9]),"%s",ending(r.end));
+  }
+  strcpy(rows[10],"ВВЕРХ/ВНИЗ: ДРУГОЙ ПОЛЁТ");
+  snprintf(rows[11],sizeof(rows[11]),"%s",journal.error()[0]?journal.error():notice?notice:"");
+  strcpy(rows[12],journal.active()?"ОК: ЗАВЕРШИТЬ ЗАПИСЬ":"ОК: НАЧАТЬ ЗАПИСЬ");
+  for(int i=0;i<13;++i) {
+    const int y=i<3?top+i*17:i<10?top+60+(i-3)*dy:i==10?tft.height()-81:i==11?tft.height()-65:tft.height()-49;
+    const int size=big&&((i>=3&&i<=9)||i==12)?2:1;
+    const uint16_t color=i==0?(journal.active()?ILI9341_RED:ILI9341_CYAN):i==9||i==11?ILI9341_YELLOW:ILI9341_WHITE;
+    field(i,8,y,w,size*8,size,color,rows[i],force);
+  }
+  if(force){text(8,tft.height()-33,1,ILI9341_CYAN,"ДОЛГОЕ ОК: НАСТРОЙКИ");footer("НАЗАД: СЛЕДУЮЩИЙ ЭКРАН");}
+}
 void drawMenu(const buttons::Menu &menu,double qnh,double average,bool sound,const char *notice,bool testRunning,
               const FlightJournal &journal,size_t journalIndex,const DeviceClock &clock,const battery::State &battery,bool force) {
   if(!started)return;
@@ -136,7 +179,7 @@ void drawMenu(const buttons::Menu &menu,double qnh,double average,bool sound,con
       unsigned(journal.revision()),unsigned(journalIndex),unsigned(journal.current().durationMs/1000),sound,testRunning,battery.voltage,notice);
   if(page!=2)force=true;
   if(!force&&strcmp(signature,menuPrevious)==0)return;
-  const char *title=menu.mode==buttons::Mode::Journal?"ЖУРНАЛ":menu.mode==buttons::Mode::Clock?"ДАТА И ВРЕМЯ":"НАСТРОЙКИ";
+  const char *title=menu.mode==buttons::Mode::Clock?"ДАТА И ВРЕМЯ":"НАСТРОЙКИ";
   header(2,title,true); strcpy(menuPrevious,signature);
   const int top=big?60:42,step=big?38:30;
   if(menu.mode==buttons::Mode::List) {
@@ -170,30 +213,6 @@ void drawMenu(const buttons::Menu &menu,double qnh,double average,bool sound,con
     text(8,top+100,1,ILI9341_WHITE,"ВВЕРХ/ВНИЗ: ШАГ 15 МИНУТ");
     text(8,top+122,1,ILI9341_WHITE,"UTC -12:00 ... +14:00");
     text(8,top+144,1,ILI9341_WHITE,"ВРЕМЯ В ЖУРНАЛЕ ХРАНИТСЯ В UTC");
-  } else if(menu.mode==buttons::Mode::Journal) {
-    if(!journal.ready())text(8,top,1,ILI9341_RED,journal.error());
-    else if(!journal.count())text(8,top,2,ILI9341_WHITE,"ПОЛЁТОВ ПОКА НЕТ");
-    else {
-      const auto &r=journal.record(journalIndex);
-      uint64_t total=0;unsigned complete=0;
-      for(size_t i=0;i<journal.count();++i){ total+=journal.record(i).durationMs;if(journal.record(i).end==flightlog::End::Manual)++complete; }
-      char row[144], time[32];duration(time,sizeof(time),total);
-      snprintf(row,sizeof(row),"ВСЕГО: %u  ЗАВЕРШЕНО: %u",unsigned(journal.count()),complete);text(8,top,1,ILI9341_CYAN,row);
-      snprintf(row,sizeof(row),"ОБЩЕЕ ВРЕМЯ: %s",time);text(8,top+16,1,ILI9341_CYAN,row);
-      const int y=top+40,dy=big?31:23;
-      snprintf(row,sizeof(row),"ПОЛЁТ #%lu  %u/%u",static_cast<unsigned long>(r.id),unsigned(journalIndex+1),unsigned(journal.count()));text(8,y,big?2:1,ILI9341_WHITE,row);
-      if(r.clockTrusted) {
-        const auto d=calendar::civil(r.startUtc+int64_t(clock.zoneMinutes)*60);
-        snprintf(row,sizeof(row),"%04d-%02d-%02d %02d:%02d:%02d",d.year,d.month,d.day,d.hour,d.minute,d.second);
-      } else strcpy(row,"ДАТА НЕ ЗАДАНА");
-      text(8,y+dy,1,ILI9341_WHITE,row);
-      duration(time,sizeof(time),r.durationMs);snprintf(row,sizeof(row),"ДЛИТЕЛЬНОСТЬ %s",time);text(8,y+dy*2,1,ILI9341_WHITE,row);
-      snprintf(row,sizeof(row),"МАКС. ВЫСОТА %.1f м",r.maxAltitude);text(8,y+dy*3,1,ILI9341_WHITE,row);
-      snprintf(row,sizeof(row),"МАКС. НАБОР %.1f м",r.maxGain);text(8,y+dy*4,1,ILI9341_WHITE,row);
-      snprintf(row,sizeof(row),"НАБОР %+.1f / СПУСК %+.1f м/с",r.maxClimb,r.minClimb);text(8,y+dy*5,1,ILI9341_WHITE,row);
-      text(8,y+dy*6,1,r.end==flightlog::End::Manual?ILI9341_GREEN:ILI9341_YELLOW,ending(r.end));
-      text(8,tft.height()-49,1,ILI9341_CYAN,"ВВЕРХ/ВНИЗ: ДРУГОЙ ПОЛЁТ");
-    }
   } else if(menu.mode==buttons::Mode::ConfirmZero||menu.mode==buttons::Mode::ConfirmFlight) {
     const char *prompt=menu.mode==buttons::Mode::ConfirmZero?"ОБНУЛИТЬ ВЫСОТУ?":journal.active()?"ЗАВЕРШИТЬ ПОЛЁТ?":"НАЧАТЬ ПОЛЁТ?";
     text(8,top,2,ILI9341_WHITE,prompt);

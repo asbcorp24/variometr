@@ -33,11 +33,14 @@ class Gestures {
   uint32_t pressed = 0, repeated = 0;
 };
 
-enum class Mode { Closed, List, Qnh, Average, ConfirmZero, BuzzerTest, Clock, Timezone, ConfirmFlight, Journal, BatteryCells };
+enum class Mode { Closed, List, Qnh, Average, ConfirmZero, BuzzerTest, Clock, Timezone, ConfirmFlight, BatteryCells };
 enum class Action { None, Page, ToggleSound, SaveQnh, SaveAverage, Zero, StartBuzzerTest, StopBuzzerTest,
   OpenClock, SaveClock, OpenTimezone, SaveTimezone, ToggleFlight, OpenJournal, JournalPrevious, JournalNext,
   OpenBatteryCells, SaveBatteryCells };
 constexpr int MenuCount = 11;
+constexpr uint8_t JournalPage = 3;
+constexpr uint8_t PageCount = 4;
+inline uint8_t nextPage(uint8_t current) { return (current + 1) % PageCount; }
 struct Menu {
   Mode mode = Mode::Closed;
   int selected = 0;
@@ -45,8 +48,10 @@ struct Menu {
   bool confirm = false;
   calendar::DateTime date;
   int dateField = 0;
+  bool flightFromJournal = false;
   void close() { mode = Mode::Closed; }
-  Action handle(Key key, Event event, double qnh, double average) {
+  void finishFlightDialog() { mode = flightFromJournal ? Mode::Closed : Mode::List; }
+  Action handle(Key key, Event event, double qnh, double average, bool journalPage = false) {
     if (event == Event::None) return Action::None;
     if (mode == Mode::BuzzerTest) {
       if ((key == Key::Back || key == Key::Ok) &&
@@ -59,13 +64,22 @@ struct Menu {
     if (key == Key::Back && event == Event::Long) return Action::ToggleSound;
     if (mode == Mode::Closed) {
       if (key == Key::Back && event == Event::Short) return Action::Page;
+      if (journalPage) {
+        if (key == Key::Up) return Action::JournalPrevious;
+        if (key == Key::Down) return Action::JournalNext;
+        if (key == Key::Ok && event == Event::Short) {
+          mode = Mode::ConfirmFlight; confirm = false; flightFromJournal = true;
+          return Action::None;
+        }
+      }
       if (key == Key::Ok && (event == Event::Short || event == Event::Long)) {
-        mode = Mode::List; selected = 0;
+        mode = Mode::List; selected = 0; flightFromJournal = false;
       }
       return Action::None;
     }
     if (key == Key::Back && event == Event::Short) {
-      mode = mode == Mode::List ? Mode::Closed : Mode::List;
+      if (mode == Mode::ConfirmFlight) finishFlightDialog();
+      else mode = mode == Mode::List ? Mode::Closed : Mode::List;
       return Action::None;
     }
     if (mode == Mode::Clock) {
@@ -74,11 +88,6 @@ struct Menu {
         if (dateField < 5) ++dateField;
         else return Action::SaveClock;
       }
-      return Action::None;
-    }
-    if (mode == Mode::Journal) {
-      if (key == Key::Up) return Action::JournalPrevious;
-      if (key == Key::Down) return Action::JournalNext;
       return Action::None;
     }
     if (key == Key::Up || key == Key::Down) {
@@ -114,7 +123,7 @@ struct Menu {
     if (mode == Mode::BatteryCells) return Action::SaveBatteryCells;
     if (mode == Mode::ConfirmFlight) {
       if (confirm) return Action::ToggleFlight;
-      mode = Mode::List; return Action::None;
+      finishFlightDialog(); return Action::None;
     }
     if (mode == Mode::ConfirmZero) {
       mode = Mode::List;
@@ -128,8 +137,8 @@ struct Menu {
       case 4: mode = Mode::BuzzerTest; return Action::StartBuzzerTest;
       case 5: mode = Mode::Clock; dateField = 0; return Action::OpenClock;
       case 6: mode = Mode::Timezone; return Action::OpenTimezone;
-      case 7: mode = Mode::ConfirmFlight; confirm = false; break;
-      case 8: mode = Mode::Journal; return Action::OpenJournal;
+      case 7: mode = Mode::ConfirmFlight; confirm = false; flightFromJournal = false; break;
+      case 8: close(); return Action::OpenJournal;
       case 9: mode = Mode::BatteryCells; return Action::OpenBatteryCells;
       case 10: close(); break;
     }
